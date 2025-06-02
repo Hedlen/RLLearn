@@ -24,14 +24,14 @@ class DPOTrainingConfig(TrainingConfig):
     reference_free: bool = False
     
     # Generation parameters (for evaluation)
-    max_new_tokens: int = 256
+    max_new_tokens: int = 1024
     temperature: float = 1.0
     top_k: int = 50
     top_p: float = 1.0
     
     # Training parameters
-    max_length: int = 512
-    max_prompt_length: int = 256
+    max_length: int = 2048
+    max_prompt_length: int = 1024
     
 
 class DPOTrainer(BaseTrainer):

@@ -22,7 +22,7 @@ class PolicyModelConfig:
     top_k: int = 50
     top_p: float = 1.0
     do_sample: bool = True
-    max_new_tokens: int = 256
+    max_new_tokens: int = 1024
     pad_token_id: Optional[int] = None
     eos_token_id: Optional[int] = None
     repetition_penalty: float = 1.0

@@ -2,40 +2,131 @@
 
 # Model Configuration
 model:
-  name: "gpt2"  # or llama2, chatglm, etc.
-  model_name_or_path: "gpt2"
-  tokenizer_name_or_path: null
-  max_length: 512
+  name: "Qwen/Qwen2.5-3B-Instruct"  # Qwen2.5-3B-Instruct model
+  model_name_or_path: "Qwen/Qwen2.5-3B-Instruct"  # HuggingFace model path
+  tokenizer_name_or_path: null  # 默认使用与模型相同的tokenizer
+  max_length: 2048  # Qwen模型支持更长的序列长度
   use_peft: true
   peft_config:
     r: 16
     lora_alpha: 32
     lora_dropout: 0.1
-    target_modules: ["c_attn", "c_proj"]
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Qwen2.5模型的注意力和MLP层
 
 # Training Configuration
 training:
   output_dir: "./outputs"
-  num_train_epochs: 3
+  num_epochs: 3  # 修正参数名
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 4
   learning_rate: 5e-5
   warmup_steps: 100
+  warmup_ratio: 0.0
+  max_grad_norm: 1.0
+  weight_decay: 0.01
+  
+  # Scheduler
+  lr_scheduler_type: "linear"
+  
+  # Evaluation and saving
   logging_steps: 10
   save_steps: 500
   eval_steps: 500
   save_total_limit: 3
-  load_best_model_at_end: true
-  metric_for_best_model: "eval_loss"
-  greater_is_better: false
-  dataloader_num_workers: 4
-  remove_unused_columns: false
+  evaluation_strategy: "steps"  # "steps", "epoch", "no"
+  save_strategy: "steps"  # "steps", "epoch", "no"
+  
+  # Early stopping
+  early_stopping_patience: 3
+  early_stopping_threshold: 0.0
+  
+  # Mixed precision
   fp16: true
-  gradient_checkpointing: true
+  bf16: false
+  
+  # Optimization
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1e-8
+  
+  # DataLoader
+  dataloader_num_workers: 4
+  dataloader_drop_last: false
+  dataloader_pin_memory: true
+  remove_unused_columns: false
+  
+  # Reproducibility
+  seed: 42
+  
+  # Resume training
+  resume_from_checkpoint: null
+  
+  # Logging
+  logging_dir: null  # 默认为 output_dir/logs
+  report_to: ["tensorboard"]
 
 # Algorithm Specific Configurations
 algorithms:
+  # SFT (Supervised Fine-Tuning) Configuration
+  sft:
+    # Data processing
+    max_length: 2048
+    truncation_side: "right"  # "left", "right"
+    padding_side: "right"     # "left", "right"
+    
+    # Training specific
+    gradient_checkpointing: false
+    dataloader_drop_last: true
+    label_smoothing: 0.0
+    
+    # Loss computation
+    ignore_index: -100
+    loss_type: "cross_entropy"  # "cross_entropy", "focal"
+    focal_alpha: 1.0
+    focal_gamma: 2.0
+    
+    # Model specific
+    freeze_base_model: false
+    freeze_layers: null  # List of layer indices to freeze
+    
+    # Evaluation
+    eval_steps: 500
+    eval_accumulation_steps: null
+    
+    # Generation for evaluation
+    eval_generation: true
+    eval_max_new_tokens: 128
+    eval_temperature: 1.0
+    eval_top_k: 50
+    eval_top_p: 0.95
+    eval_do_sample: true
+  
+  # Reward Model Training Configuration
+  reward:
+    # Reward model specific hyperparameters
+    margin: 0.0
+    loss_type: "ranking"  # "ranking", "regression", "classification"
+    ranking_loss_type: "hinge"  # "hinge", "log_sigmoid", "cross_entropy"
+    label_smoothing: 0.0
+    
+    # Data processing
+    max_length: 2048
+    truncation_side: "right"  # "left", "right"
+    
+    # Training specific
+    gradient_checkpointing: false
+    dataloader_drop_last: true
+    
+    # Evaluation
+    eval_steps: 500
+    eval_accumulation_steps: null
+    
+    # Model specific
+    freeze_base_model: false
+    freeze_layers: null  # List of layer indices to freeze
+  
+  # PPO Configuration
   ppo:
     learning_rate: 1.41e-5
     mini_batch_size: 1
@@ -50,14 +141,16 @@ algorithms:
     target_kl: 0.1
     max_grad_norm: 0.5
     
+  # DPO Configuration
   dpo:
     beta: 0.1
     learning_rate: 5e-7
-    max_length: 512
-    max_prompt_length: 256
+    max_length: 2048
+    max_prompt_length: 1024
     label_smoothing: 0.0
     loss_type: "sigmoid"  # or "hinge", "ipo"
     
+  # GRPO Configuration
   grpo:
     learning_rate: 1e-5
     group_size: 8
@@ -66,35 +159,89 @@ algorithms:
 
 # Data Configuration
 data:
-  dataset_name: null
-  dataset_config: null
-  train_file: null
-  validation_file: null
-  test_file: null
-  max_train_samples: null
-  max_eval_samples: null
+  # Dataset source (choose one)
+  dataset_name: null  # HuggingFace dataset name
+  dataset_config: null  # Dataset configuration
+  
+  # Local files (choose one approach)
+  train_file: null  # "./data/train.json"  # 训练数据文件
+  validation_file: null  # "./data/eval.json"  # 验证数据文件
+  test_file: null  # "./data/test.json"  # 测试数据文件
+  
+  # Data processing
+  max_train_samples: null  # 限制训练样本数量
+  max_eval_samples: null   # 限制评估样本数量
   preprocessing_num_workers: 4
   overwrite_cache: false
   validation_split_percentage: 10
+  
+  # Data format
+  data_format: "json"  # "json", "jsonl", "csv"
+  text_column: "text"  # 文本列名
+  label_column: "label"  # 标签列名（用于分类任务）
+  
+  # For preference data (reward model training)
+  chosen_column: "chosen"  # 偏好数据中的选择列
+  rejected_column: "rejected"  # 偏好数据中的拒绝列
+  
+  # For conversation data
+  conversation_column: "conversation"  # 对话列名
+  prompt_column: "prompt"  # 提示列名
+  response_column: "response"  # 回复列名
 
 # RLHF Configuration
 rlhf:
-  reward_model_path: null
-  sft_model_path: null
-  ref_model_path: null
-  use_score_scaling: true
-  use_score_norm: true
-  score_clip: 5.0
+  # Model paths for RLHF pipeline
+  reward_model_path: "./outputs/reward_model"  # 奖励模型路径
+  sft_model_path: "./outputs/sft_model"        # SFT模型路径
+  ref_model_path: null                          # 参考模型路径（默认使用SFT模型）
+  
+  # Score processing
+  use_score_scaling: true   # 是否使用分数缩放
+  use_score_norm: true      # 是否使用分数归一化
+  score_clip: 5.0           # 分数裁剪阈值
+  
+  # KL divergence settings
+  kl_coef: 0.1              # KL散度系数
+  adaptive_kl: false        # 是否使用自适应KL
+  target_kl: 6.0            # 目标KL散度
+  
+  # Generation settings for RL training
+  max_new_tokens: 1024       # RL训练时的最大生成长度
+  temperature: 1.0          # 生成温度
+  top_k: 0                  # Top-k采样（0表示不使用）
+  top_p: 1.0                # Top-p采样
+  do_sample: true           # 是否使用采样
 
-# Evaluation Configuration
+# 评估配置
 evaluation:
-  eval_dataset: null
-  eval_batch_size: 8
-  max_new_tokens: 256
-  temperature: 0.7
-  top_p: 0.9
-  do_sample: true
-  num_return_sequences: 1
+  eval_dataset: null  # "./data/eval.json"  # 评估数据集（需要用户提供）
+  eval_batch_size: 8                        # 评估批大小
+  eval_steps: 500                           # 评估间隔
+  max_eval_samples: 1000                    # 最大评估样本数
+  
+  # 生成参数
+  generation:
+    max_new_tokens: 1024                     # 最大生成长度
+    temperature: 0.7                        # 生成温度
+    top_p: 0.9                              # Top-p采样
+    top_k: 50                               # Top-k采样
+    do_sample: true                         # 是否采样
+    repetition_penalty: 1.1                 # 重复惩罚
+    length_penalty: 1.0                     # 长度惩罚
+  
+  # 评估指标
+  metrics:
+    compute_bleu: true                      # 计算BLEU分数
+    compute_rouge: true                     # 计算ROUGE分数
+    compute_diversity: true                 # 计算多样性指标
+    compute_perplexity: true                # 计算困惑度
+    compute_reward: true                    # 计算奖励分数
+  
+  # 输出设置
+  save_generations: true                    # 保存生成结果
+  save_metrics: true                        # 保存评估指标
+  output_dir: "./eval_results"              # 评估结果输出目录
 
 # Logging and Monitoring
 logging:

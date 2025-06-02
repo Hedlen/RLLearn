@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from .base_trainer import BaseTrainer, TrainingConfig
 from ..algorithms import PPOAlgorithm
 from ..models import PolicyModel, ValueModel
-from ..utils import compute_advantages, compute_returns
+from ..algorithms.utils import compute_advantages, compute_returns
 
 
 @dataclass
@@ -29,7 +29,7 @@ class PPOTrainingConfig(TrainingConfig):
     gae_lambda: float = 0.95
     
     # Generation parameters
-    max_new_tokens: int = 256
+    max_new_tokens: int = 1024
     temperature: float = 1.0
     top_k: int = 50
     top_p: float = 1.0

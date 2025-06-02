@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 from src.utils.logger import setup_logger
-from src.trainers import PPOTrainer, DPOTrainer, GRPOTrainer
+from src.trainers import PPOTrainer, DPOTrainer, GRPOTrainer, SFTTrainer, RewardModelTrainer
 from src.evaluators import ModelEvaluator
 from src.data import DataProcessor
 
@@ -44,7 +44,7 @@ def main():
     parser.add_argument(
         "--algorithm", 
         type=str, 
-        choices=["ppo", "dpo", "grpo"],
+        choices=["sft", "reward", "ppo", "dpo", "grpo"],
         help="Algorithm to use for training"
     )
     parser.add_argument(
@@ -71,7 +71,6 @@ def main():
     logger = setup_logger(
         name="rl_learning",
         level=config['logging']['log_level'],
-        use_tensorboard=config['logging']['use_tensorboard'],
         log_dir=os.path.join(config['training']['output_dir'], "logs")
     )
     
@@ -88,13 +87,53 @@ def main():
             # Training mode
             if not args.algorithm:
                 raise ValueError("Algorithm must be specified for training mode")
-                
-            if args.algorithm == "ppo":
-                trainer = PPOTrainer(config)
+            
+            # Import model creation functions
+            from src.models import create_policy_model, create_reward_model, create_value_model
+            
+            # Create models and tokenizer based on algorithm
+            if args.algorithm == "sft":
+                from src.trainers.sft_trainer import SFTConfig
+                training_config = SFTConfig(
+                    model_name_or_path=config['model']['model_name_or_path'],
+                    **config['training']
+                )
+                model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                trainer = SFTTrainer(training_config, model, tokenizer)
+            elif args.algorithm == "reward":
+                from src.trainers.reward_trainer import RewardTrainingConfig
+                training_config = RewardTrainingConfig(
+                    model_name_or_path=config['model']['model_name_or_path'],
+                    **config['training']
+                )
+                model, tokenizer = create_reward_model(config['model']['model_name_or_path'])
+                trainer = RewardModelTrainer(training_config, model, tokenizer)
+            elif args.algorithm == "ppo":
+                from src.trainers.ppo_trainer import PPOTrainingConfig
+                training_config = PPOTrainingConfig(
+                    model_name_or_path=config['model']['model_name_or_path'],
+                    **config['training']
+                )
+                policy_model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                value_model, _ = create_value_model(config['model']['model_name_or_path'])
+                trainer = PPOTrainer(training_config, policy_model, value_model, tokenizer)
             elif args.algorithm == "dpo":
-                trainer = DPOTrainer(config)
+                from src.trainers.dpo_trainer import DPOTrainingConfig
+                training_config = DPOTrainingConfig(
+                    model_name_or_path=config['model']['model_name_or_path'],
+                    **config['training']
+                )
+                model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                trainer = DPOTrainer(training_config, model, tokenizer)
             elif args.algorithm == "grpo":
-                trainer = GRPOTrainer(config)
+                from src.trainers.grpo_trainer import GRPOConfig
+                training_config = GRPOConfig(
+                    model_name_or_path=config['model']['model_name_or_path'],
+                    **config['training']
+                )
+                policy_model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                reward_model, _ = create_reward_model(config['model']['model_name_or_path'])
+                trainer = GRPOTrainer(training_config, policy_model, reward_model, tokenizer)
             else:
                 raise ValueError(f"Unknown algorithm: {args.algorithm}")
                 

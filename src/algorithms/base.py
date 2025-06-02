@@ -59,7 +59,7 @@ class BaseRLAlgorithm(ABC):
     def generate_response(self,
                          input_ids: torch.Tensor,
                          attention_mask: torch.Tensor,
-                         max_new_tokens: int = 256,
+                         max_new_tokens: int = 1024,
                          temperature: float = 0.7,
                          top_p: float = 0.9,
                          do_sample: bool = True) -> torch.Tensor:

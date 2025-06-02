@@ -258,7 +258,7 @@ class PPOAlgorithm(BaseRLAlgorithm):
                              queries: torch.Tensor,
                              query_masks: torch.Tensor,
                              reward_fn: callable,
-                             max_new_tokens: int = 256) -> Dict[str, torch.Tensor]:
+                             max_new_tokens: int = 1024) -> Dict[str, torch.Tensor]:
         """Generate responses and evaluate with reward function
         
         Args:
