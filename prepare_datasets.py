@@ -363,6 +363,148 @@ class DatasetPreparer:
             logger.error(f"数据验证失败: {e}")
             return {}
     
+    def prepare_hh_rlhf(self, num_samples: Optional[int] = None, max_length: Optional[int] = None) -> Dict[str, str]:
+        """准备HH-RLHF数据集"""
+        logger.info("准备HH-RLHF数据集...")
+        
+        # 下载原始数据
+        raw_file = self.download_hh_rlhf(max_samples=num_samples)
+        if not raw_file:
+            return {}
+        
+        # 处理数据
+        processed_files = {}
+        
+        # 创建偏好学习数据
+        preference_file = os.path.join(self.output_dir, "processed", "hh_rlhf_preference.json")
+        with open(raw_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 保存处理后的偏好数据
+        with open(preference_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        processed_files['preference'] = preference_file
+        
+        # 验证数据
+        self.validate_data(preference_file, "preference")
+        
+        return processed_files
+    
+    def prepare_belle(self, num_samples: Optional[int] = None, max_length: Optional[int] = None) -> Dict[str, str]:
+        """准备BELLE数据集"""
+        logger.info("准备BELLE数据集...")
+        
+        # 下载原始数据
+        raw_file = self.download_belle_data(max_samples=num_samples)
+        if not raw_file:
+            return {}
+        
+        # 处理数据
+        processed_files = {}
+        
+        # 创建SFT数据
+        sft_file = os.path.join(self.output_dir, "processed", "belle_sft.json")
+        with open(raw_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 保存处理后的SFT数据
+        with open(sft_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        processed_files['sft'] = sft_file
+        
+        # 创建合成偏好数据
+        preference_file = self.create_synthetic_preference_data(sft_file, num_samples=min(1000, len(data)))
+        if preference_file:
+            processed_files['preference'] = preference_file
+        
+        # 验证数据
+        self.validate_data(sft_file, "sft")
+        
+        return processed_files
+    
+    def prepare_alpaca_chinese(self, num_samples: Optional[int] = None, max_length: Optional[int] = None) -> Dict[str, str]:
+        """准备Alpaca Chinese数据集"""
+        logger.info("准备Alpaca Chinese数据集...")
+        
+        # 下载原始数据
+        raw_file = self.download_alpaca_chinese(max_samples=num_samples)
+        if not raw_file:
+            return {}
+        
+        # 处理数据
+        processed_files = {}
+        
+        # 创建SFT数据
+        sft_file = os.path.join(self.output_dir, "processed", "alpaca_chinese_sft.json")
+        with open(raw_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        # 保存处理后的SFT数据
+        with open(sft_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        processed_files['sft'] = sft_file
+        
+        # 创建合成偏好数据
+        preference_file = self.create_synthetic_preference_data(sft_file, num_samples=min(1000, len(data)))
+        if preference_file:
+            processed_files['preference'] = preference_file
+        
+        # 验证数据
+        self.validate_data(sft_file, "sft")
+        
+        return processed_files
+    
+    def prepare_moss(self, num_samples: Optional[int] = None, max_length: Optional[int] = None) -> Dict[str, str]:
+        """准备MOSS数据集"""
+        logger.info("准备MOSS数据集...")
+        
+        try:
+            # 尝试下载MOSS数据集
+            dataset = load_dataset("fnlp/moss-002-sft-data")
+            
+            # 处理数据
+            train_data = []
+            for i, item in enumerate(tqdm(dataset['train'], desc="处理MOSS数据")):
+                if num_samples and i >= num_samples:
+                    break
+                
+                # MOSS数据格式处理
+                conversation = item.get('conversation', [])
+                if len(conversation) >= 2:
+                    prompt = conversation[0].get('content', '')
+                    response = conversation[1].get('content', '')
+                    
+                    if prompt and response:
+                        train_data.append({
+                            "prompt": prompt,
+                            "response": response
+                        })
+            
+            # 保存SFT数据
+            sft_file = os.path.join(self.output_dir, "processed", "moss_sft.json")
+            with open(sft_file, 'w', encoding='utf-8') as f:
+                json.dump(train_data, f, ensure_ascii=False, indent=2)
+            
+            processed_files = {'sft': sft_file}
+            
+            # 创建合成偏好数据
+            preference_file = self.create_synthetic_preference_data(sft_file, num_samples=min(1000, len(train_data)))
+            if preference_file:
+                processed_files['preference'] = preference_file
+            
+            # 验证数据
+            self.validate_data(sft_file, "sft")
+            
+            logger.info(f"MOSS数据已保存，样本数量: {len(train_data)}")
+            return processed_files
+            
+        except Exception as e:
+            logger.error(f"准备MOSS数据集失败: {e}")
+            return {}
+    
     def create_sample_data(self, num_samples: int = 100) -> Dict[str, str]:
         """创建示例数据集"""
         logger.info(f"创建包含 {num_samples} 个样本的示例数据集...")
