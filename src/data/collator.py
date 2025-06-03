@@ -27,7 +27,14 @@ class DataCollatorForRL:
     def _pad_sequence(self, sequences: List[torch.Tensor], 
                      padding_value: int = 0) -> torch.Tensor:
         """Pad sequences to the same length"""
-        max_len = max(len(seq) for seq in sequences)
+        # Convert lists to tensors if necessary
+        tensor_sequences = []
+        for seq in sequences:
+            if isinstance(seq, list):
+                seq = torch.tensor(seq, dtype=torch.long)
+            tensor_sequences.append(seq)
+        
+        max_len = max(len(seq) for seq in tensor_sequences)
         
         if self.max_length is not None:
             max_len = min(max_len, self.max_length)
@@ -37,7 +44,7 @@ class DataCollatorForRL:
                       self.pad_to_multiple_of * self.pad_to_multiple_of)
         
         padded_sequences = []
-        for seq in sequences:
+        for seq in tensor_sequences:
             if len(seq) > max_len:
                 seq = seq[:max_len]
             
