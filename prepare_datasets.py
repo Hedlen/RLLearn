@@ -122,13 +122,11 @@ class DatasetPreparer:
         
         # 保存训练集
         with open(output_train_file, 'w', encoding='utf-8') as f:
-            for item in train_data:
-                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+            json.dump(train_data, f, ensure_ascii=False, indent=2)
         
         # 保存验证集
         with open(output_val_file, 'w', encoding='utf-8') as f:
-            for item in val_data:
-                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+            json.dump(val_data, f, ensure_ascii=False, indent=2)
         
         logger.info(f"数据集拆分完成:")
         logger.info(f"  总样本数: {total_samples}")
