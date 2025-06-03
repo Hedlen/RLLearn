@@ -32,6 +32,7 @@ class TrainingConfig:
     # Model and data
     model_name_or_path: str
     output_dir: str
+    experiment_name: Optional[str] = None
     dataset_path: Optional[str] = None
     
     # Training hyperparameters
@@ -89,6 +90,10 @@ class TrainingConfig:
     dataloader_pin_memory: bool = True
     
     def __post_init__(self):
+        # 如果设置了实验名称，则在output_dir下创建实验子目录
+        if self.experiment_name:
+            self.output_dir = os.path.join(self.output_dir, self.experiment_name)
+        
         if self.logging_dir is None:
             self.logging_dir = os.path.join(self.output_dir, "logs")
 

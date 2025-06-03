@@ -9,7 +9,7 @@ from pathlib import Path
 from src.utils import load_config, setup_logger
 from src.data import DataProcessor
 from src.data.merger import merge_datasets_for_algorithm, merge_validation_datasets_for_algorithm
-
+from src.evaluators import ModelEvaluator
 
 def _get_algorithm_data_paths(config, algorithm_type):
     """Get optimized data paths for algorithm with fallback logic"""
@@ -112,6 +112,11 @@ def main():
         help="Output directory (overrides config)"
     )
     parser.add_argument(
+        "--experiment_name", 
+        type=str, 
+        help="Experiment name (creates subdirectory under output_dir)"
+    )
+    parser.add_argument(
         "--resume_from_checkpoint", 
         type=str, 
         help="Path to checkpoint to resume from"
@@ -125,6 +130,8 @@ def main():
     # Override config with command line arguments
     if args.output_dir:
         config['training']['output_dir'] = args.output_dir
+    if args.experiment_name:
+        config['training']['experiment_name'] = args.experiment_name
     
     # Setup logging
     logger = setup_logger(
@@ -225,7 +232,7 @@ def main():
                 
                 trainer = RewardModelTrainer(training_config, model, tokenizer, train_dataloader, eval_dataloader)
             elif args.algorithm == "ppo":
-                from src.trainers.ppo_trainer import PPOTrainingConfig
+                from src.trainers.ppo_trainer import PPOTrainingConfig, PPOTrainer
                 from src.data.collator import DataCollatorForRL
                 
                 training_config = PPOTrainingConfig(
@@ -258,7 +265,7 @@ def main():
                 
                 trainer = PPOTrainer(training_config, policy_model, value_model, tokenizer, train_dataloader, eval_dataloader)
             elif args.algorithm == "dpo":
-                from src.trainers.dpo_trainer import DPOTrainingConfig
+                from src.trainers.dpo_trainer import DPOTrainingConfig, DPOTrainer
                 from src.data.collator import DataCollatorForPreference
                 
                 training_config = DPOTrainingConfig(
@@ -290,7 +297,7 @@ def main():
                 
                 trainer = DPOTrainer(training_config, model, tokenizer, train_dataloader, eval_dataloader)
             elif args.algorithm == "grpo":
-                from src.trainers.grpo_trainer import GRPOConfig
+                from src.trainers.grpo_trainer import GRPOConfig, GRPOTrainer
                 from src.data.collator import DataCollatorForRL
                 
                 training_config = GRPOConfig(
