@@ -92,14 +92,20 @@ def setup_logger(
         Configured logger
     """
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
+    if isinstance(level, int):
+        logger.setLevel(level)
+    else:
+        logger.setLevel(getattr(logging, level.upper()))
     
     # Clear existing handlers
     logger.handlers.clear()
     
     # Console handler with colors
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, level.upper()))
+    if isinstance(level, int):
+        console_handler.setLevel(level)
+    else:
+        console_handler.setLevel(getattr(logging, level.upper()))
     
     # Format
     formatter = logging.Formatter(

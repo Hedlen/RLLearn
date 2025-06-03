@@ -315,6 +315,10 @@ class MetricsTracker:
                 averages[key] = np.mean(values)
         return averages
     
+    def get_average_metrics(self, window: Optional[int] = None) -> Dict[str, float]:
+        """Get average metrics over window (alias for get_average)"""
+        return self.get_average(window)
+    
     def save(self, filepath: str):
         """Save metrics to file"""
         with open(filepath, 'w') as f:

@@ -102,7 +102,69 @@ source venv/bin/activate
 
 3. **安装依赖**
 ```bash
+# 基础安装
 pip install -r requirements.txt
+
+# 验证安装是否成功
+python -c "import torch; print(f'PyTorch版本: {torch.__version__}'); print(f'CUDA可用: {torch.cuda.is_available()}')"
+python -c "import transformers; print(f'Transformers版本: {transformers.__version__}')"
+
+# 环境检查脚本
+python scripts/check_environment.py
+```
+
+### 🔧 配置文件验证
+
+在开始训练前，建议验证配置文件的正确性：
+
+```python
+# scripts/validate_config.py
+import yaml
+import os
+from pathlib import Path
+
+def validate_config(config_path="config.yaml"):
+    """验证配置文件的完整性和正确性"""
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        # 检查必需的配置项
+        required_keys = ['model', 'training', 'data']
+        for key in required_keys:
+            if key not in config:
+                print(f"❌ 缺少必需配置项: {key}")
+                return False
+        
+        # 检查模型路径
+        if 'model_name_or_path' in config['model']:
+            model_path = config['model']['model_name_or_path']
+            if not os.path.exists(model_path) and '/' not in model_path:
+                print(f"⚠️  模型路径可能不存在: {model_path}")
+        
+        # 检查数据路径
+        if 'datasets' in config['data']:
+            for dataset in config['data']['datasets']:
+                if 'path' in dataset:
+                    data_path = dataset['path']
+                    if not os.path.exists(data_path):
+                        print(f"❌ 数据文件不存在: {data_path}")
+                        return False
+        
+        print("✅ 配置文件验证通过")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 配置文件验证失败: {e}")
+        return False
+
+if __name__ == "__main__":
+    validate_config()
+```
+
+```bash
+# 验证配置文件
+python scripts/validate_config.py
 ```
 
 ## ⚙️ 配置
@@ -168,6 +230,21 @@ logging:
 
 ## 🚀 快速开始
 
+### ⚡ 零配置快速体验（推荐首次使用）
+
+最快速的体验方式，无需任何配置，5分钟内完成完整流程：
+
+```bash
+# 1. 环境检查和依赖验证
+python quick_test.py --check_env
+
+# 2. 零配置快速体验（自动生成数据、快速训练、评估）
+python example_training.py --model_name Qwen/Qwen2.5-3B-Instruct --max_steps 10 --quick_test
+
+# 3. 查看训练结果
+python main.py --config config.yaml --mode eval --quick_eval
+```
+
 ### 方式一：使用示例脚本（推荐新手）
 
 `example_training.py` 提供了完整的端到端训练示例，包含数据准备、模型训练和评估：
@@ -176,7 +253,7 @@ logging:
 # 快速测试（使用小模型和少量步数）
 python example_training.py --model_name Qwen/Qwen2.5-3B-Instruct --max_steps 50
 
-# 使用Qwen2.5-3B-Instruct进行完整训练
+# 使用Qwen/Qwen2.5-3B-Instruct进行完整训练
 python example_training.py --model_name Qwen/Qwen2.5-3B-Instruct --max_steps 1000
 
 # 仅运行SFT训练
@@ -220,6 +297,53 @@ python main.py --config config.yaml --mode eval
 - ✅ 支持断点续训
 - ✅ 生产级错误处理和日志
 - ✅ 适合正式项目和大规模训练
+
+#### 多数据集配置 🆕
+
+现在支持配置多个数据集进行合并训练！在 `config.yaml` 中配置：
+
+```yaml
+data:
+  datasets:
+    sft:
+      train_files:
+        - path: "./data/alpaca_chinese_sft.json"
+          weight: 1.0
+          name: "alpaca_chinese"
+        - path: "./data/belle_sft.json"
+          weight: 0.8
+          name: "belle_conversation"
+      validation_files:  # 新增：验证数据集支持
+        - path: "./data/alpaca_chinese_val.json"
+          weight: 1.0
+          name: "alpaca_chinese_val"
+        - path: "./data/belle_val.json"
+          weight: 0.8
+          name: "belle_val"
+      merge_datasets: true
+      merged_cache_path: "./cache/merged_sft_train.json"
+      merged_validation_cache_path: "./cache/merged_sft_validation.json"  # 新增：验证集缓存
+  merge_config:
+    strategy: "weighted_sampling"  # concat, weighted_sampling, balanced
+    shuffle: true
+```
+
+详细配置请参考 [多数据集配置指南](docs/multi_datasets_guide.md)
+
+#### 数据集合并（可选）
+
+手动合并多个数据集：
+
+```bash
+# 合并SFT数据集
+python merge_datasets.py --config config.yaml --algorithm sft
+
+# 查看合并计划（不实际执行）
+python merge_datasets.py --config config.yaml --algorithm sft --dry-run
+
+# 使用特定策略合并
+python merge_datasets.py --config config.yaml --algorithm sft --strategy balanced
+```
 
 ### 快速测试系统
 
@@ -289,6 +413,13 @@ python prepare_datasets.py --dataset sample --num_samples 100 --output_dir ./dat
 
 # 验证数据格式
 python prepare_datasets.py --validate_only
+
+# 新增：数据集拆分功能
+# 将单个数据集拆分为训练集和验证集
+python prepare_datasets.py --split_dataset ./data/large_dataset.json --train_ratio 0.8 --shuffle --random_seed 42
+
+# 根据配置文件批量拆分数据集
+python prepare_datasets.py --split_config config.yaml --algorithm_type sft
 ```
 
 #### 下载公开数据集
@@ -742,6 +873,47 @@ validate_format('./data/hh_rlhf_helpful-base_train.json', 'preference')
 }
 ```
 
+### 验证数据集功能
+
+框架现在支持独立的验证数据集配置，提供更好的训练监控和模型评估：
+
+#### 功能特性
+
+- **多验证文件支持**: 可配置多个验证数据集文件
+- **自动合并**: 验证数据集可自动合并并缓存
+- **算法兼容**: 支持SFT、Reward和RLHF所有训练算法
+- **数据集拆分**: 提供工具将大数据集拆分为训练集和验证集
+
+#### 配置示例
+
+```yaml
+# config.yaml
+data:
+  sft:
+    train_files:
+      - "./data/sft_train1.json"
+      - "./data/sft_train2.json"
+    validation_files:  # 验证数据集配置
+      - "./data/sft_val1.json"
+      - "./data/sft_val2.json"
+    merge_datasets: true
+    merged_cache_path: "./data/merged_sft_train.json"
+    merged_validation_cache_path: "./data/merged_sft_validation.json"
+```
+
+#### 使用数据集拆分工具
+
+```bash
+# 将单个数据集拆分为训练集和验证集
+python prepare_datasets.py --split_dataset ./data/large_dataset.json \
+    --train_ratio 0.8 --shuffle --random_seed 42
+
+# 根据配置文件批量拆分
+python prepare_datasets.py --split_config config.yaml --algorithm_type sft
+```
+
+详细使用指南请参考 `docs/validation_datasets_guide.md`。
+
 ### 数据预处理
 
 ```python
@@ -766,6 +938,101 @@ eval_dataset = processor.load_dataset(
 ```
 
 ## 🏋️ 训练
+
+### 🔍 训练前置检查
+
+在开始训练前，建议运行以下检查脚本：
+
+```python
+# scripts/pre_training_check.py
+import torch
+import psutil
+import os
+from transformers import AutoTokenizer, AutoModel
+
+def check_system_resources():
+    """检查系统资源"""
+    print("=== 系统资源检查 ===")
+    
+    # GPU检查
+    if torch.cuda.is_available():
+        gpu_count = torch.cuda.device_count()
+        print(f"✅ 检测到 {gpu_count} 个GPU")
+        for i in range(gpu_count):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
+            print(f"   GPU {i}: {gpu_name} ({gpu_memory:.1f}GB)")
+    else:
+        print("⚠️  未检测到GPU，将使用CPU训练（速度较慢）")
+    
+    # 内存检查
+    memory = psutil.virtual_memory()
+    print(f"💾 系统内存: {memory.total / 1024**3:.1f}GB (可用: {memory.available / 1024**3:.1f}GB)")
+    
+    # 磁盘空间检查
+    disk = psutil.disk_usage('.')
+    print(f"💿 磁盘空间: {disk.free / 1024**3:.1f}GB 可用")
+    
+    if disk.free / 1024**3 < 10:
+        print("⚠️  磁盘空间不足，建议至少保留10GB空间")
+
+def check_model_accessibility(model_name):
+    """检查模型是否可访问"""
+    print(f"\n=== 模型访问检查: {model_name} ===")
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        print(f"✅ 分词器加载成功")
+        
+        # 尝试加载模型配置（不加载权重）
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(model_name)
+        print(f"✅ 模型配置加载成功")
+        print(f"   模型类型: {config.model_type}")
+        print(f"   词汇表大小: {config.vocab_size}")
+        
+        return True
+    except Exception as e:
+        print(f"❌ 模型访问失败: {e}")
+        return False
+
+def check_data_files(config_path="config.yaml"):
+    """检查数据文件"""
+    print(f"\n=== 数据文件检查 ===")
+    try:
+        import yaml
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        if 'datasets' in config.get('data', {}):
+            for i, dataset in enumerate(config['data']['datasets']):
+                if 'path' in dataset:
+                    path = dataset['path']
+                    if os.path.exists(path):
+                        size = os.path.getsize(path) / 1024**2
+                        print(f"✅ 数据集 {i+1}: {path} ({size:.1f}MB)")
+                    else:
+                        print(f"❌ 数据集 {i+1}: {path} 不存在")
+                        return False
+        return True
+    except Exception as e:
+        print(f"❌ 数据文件检查失败: {e}")
+        return False
+
+if __name__ == "__main__":
+    import sys
+    model_name = sys.argv[1] if len(sys.argv) > 1 else "Qwen/Qwen2.5-3B-Instruct"
+    
+    check_system_resources()
+    check_model_accessibility(model_name)
+    check_data_files()
+    
+    print("\n=== 检查完成 ===")
+```
+
+```bash
+# 运行训练前检查
+python scripts/pre_training_check.py Qwen/Qwen2.5-3B-Instruct
+```
 
 ### 训练流程概述
 
@@ -1111,6 +1378,182 @@ python main.py --config config.yaml --algorithm ppo --resume_from_checkpoint ./o
 
 ## 🧪 测试和评估
 
+### 📊 训练进度跟踪
+
+实时监控训练进度和预估完成时间：
+
+```python
+# scripts/training_monitor.py
+import time
+import json
+from datetime import datetime, timedelta
+from pathlib import Path
+
+class TrainingMonitor:
+    def __init__(self, total_steps, log_file="training_progress.json"):
+        self.total_steps = total_steps
+        self.log_file = log_file
+        self.start_time = time.time()
+        self.step_times = []
+        
+    def update(self, current_step, loss=None, metrics=None):
+        """更新训练进度"""
+        current_time = time.time()
+        elapsed_time = current_time - self.start_time
+        
+        # 计算平均步骤时间
+        if current_step > 0:
+            avg_step_time = elapsed_time / current_step
+            remaining_steps = self.total_steps - current_step
+            eta = remaining_steps * avg_step_time
+            
+            progress = {
+                "current_step": current_step,
+                "total_steps": self.total_steps,
+                "progress_percent": (current_step / self.total_steps) * 100,
+                "elapsed_time": elapsed_time,
+                "eta_seconds": eta,
+                "eta_formatted": str(timedelta(seconds=int(eta))),
+                "avg_step_time": avg_step_time,
+                "timestamp": datetime.now().isoformat(),
+                "loss": loss,
+                "metrics": metrics
+            }
+            
+            # 保存进度
+            with open(self.log_file, 'w') as f:
+                json.dump(progress, f, indent=2)
+            
+            # 打印进度
+            print(f"\r步骤 {current_step}/{self.total_steps} "
+                  f"({progress['progress_percent']:.1f}%) "
+                  f"- 预计剩余: {progress['eta_formatted']} "
+                  f"- 损失: {loss:.4f if loss else 'N/A'}", end="")
+            
+            return progress
+        
+    def get_status(self):
+        """获取当前状态"""
+        if Path(self.log_file).exists():
+            with open(self.log_file, 'r') as f:
+                return json.load(f)
+        return None
+
+# 使用示例
+if __name__ == "__main__":
+    monitor = TrainingMonitor(total_steps=1000)
+    
+    # 模拟训练过程
+    for step in range(1, 101):
+        time.sleep(0.1)  # 模拟训练时间
+        loss = 2.0 - (step * 0.01)  # 模拟损失下降
+        monitor.update(step, loss=loss)
+```
+
+```bash
+# 查看训练进度
+python scripts/training_monitor.py
+
+# 实时监控训练状态
+watch -n 5 "python -c 'import json; print(json.dumps(json.load(open(\"training_progress.json\")), indent=2))'"
+```
+
+### 🔄 检查点管理和恢复
+
+```python
+# scripts/checkpoint_manager.py
+import os
+import json
+from pathlib import Path
+from datetime import datetime
+
+class CheckpointManager:
+    def __init__(self, checkpoint_dir="./checkpoints"):
+        self.checkpoint_dir = Path(checkpoint_dir)
+        self.checkpoint_dir.mkdir(exist_ok=True)
+        
+    def save_checkpoint_info(self, step, loss, model_path, config):
+        """保存检查点信息"""
+        checkpoint_info = {
+            "step": step,
+            "loss": loss,
+            "model_path": str(model_path),
+            "timestamp": datetime.now().isoformat(),
+            "config": config
+        }
+        
+        info_file = self.checkpoint_dir / f"checkpoint_{step}_info.json"
+        with open(info_file, 'w') as f:
+            json.dump(checkpoint_info, f, indent=2)
+            
+        # 更新最新检查点信息
+        latest_file = self.checkpoint_dir / "latest_checkpoint.json"
+        with open(latest_file, 'w') as f:
+            json.dump(checkpoint_info, f, indent=2)
+            
+        print(f"✅ 检查点已保存: {info_file}")
+        
+    def list_checkpoints(self):
+        """列出所有检查点"""
+        checkpoints = []
+        for info_file in self.checkpoint_dir.glob("checkpoint_*_info.json"):
+            with open(info_file, 'r') as f:
+                info = json.load(f)
+                checkpoints.append(info)
+        
+        # 按步骤排序
+        checkpoints.sort(key=lambda x: x['step'])
+        return checkpoints
+        
+    def get_best_checkpoint(self, metric='loss', mode='min'):
+        """获取最佳检查点"""
+        checkpoints = self.list_checkpoints()
+        if not checkpoints:
+            return None
+            
+        if mode == 'min':
+            best = min(checkpoints, key=lambda x: x.get(metric, float('inf')))
+        else:
+            best = max(checkpoints, key=lambda x: x.get(metric, float('-inf')))
+            
+        return best
+        
+    def resume_from_checkpoint(self, checkpoint_path=None):
+        """从检查点恢复训练"""
+        if checkpoint_path is None:
+            # 使用最新检查点
+            latest_file = self.checkpoint_dir / "latest_checkpoint.json"
+            if latest_file.exists():
+                with open(latest_file, 'r') as f:
+                    checkpoint_info = json.load(f)
+                checkpoint_path = checkpoint_info['model_path']
+            else:
+                print("❌ 未找到检查点")
+                return None
+                
+        if os.path.exists(checkpoint_path):
+            print(f"✅ 从检查点恢复: {checkpoint_path}")
+            return checkpoint_path
+        else:
+            print(f"❌ 检查点不存在: {checkpoint_path}")
+            return None
+
+# 使用示例
+if __name__ == "__main__":
+    manager = CheckpointManager()
+    
+    # 列出检查点
+    checkpoints = manager.list_checkpoints()
+    print("可用检查点:")
+    for cp in checkpoints:
+        print(f"  步骤 {cp['step']}: 损失 {cp['loss']:.4f} - {cp['timestamp']}")
+    
+    # 获取最佳检查点
+    best = manager.get_best_checkpoint()
+    if best:
+        print(f"\n最佳检查点: 步骤 {best['step']}, 损失 {best['loss']:.4f}")
+```
+
 ### 快速评估
 
 ```bash
@@ -1414,17 +1857,193 @@ class CustomTrainer(BaseTrainer):
 
 ## 🐛 故障排除
 
+### 🚨 智能错误处理和调试
+
+```python
+# scripts/error_handler.py
+import traceback
+import logging
+import sys
+from datetime import datetime
+from pathlib import Path
+
+class TrainingErrorHandler:
+    def __init__(self, log_dir="./logs"):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(exist_ok=True)
+        
+        # 设置日志
+        self.setup_logging()
+        
+    def setup_logging(self):
+        """设置详细日志记录"""
+        log_file = self.log_dir / f"training_errors_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file),
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        
+        self.logger = logging.getLogger(__name__)
+        
+    def handle_cuda_error(self, error):
+        """处理CUDA相关错误"""
+        error_msg = str(error).lower()
+        
+        if "out of memory" in error_msg:
+            suggestions = [
+                "🔧 减少批次大小 (batch_size)",
+                "🔧 启用梯度累积 (gradient_accumulation_steps)",
+                "🔧 使用混合精度训练 (fp16=True)",
+                "🔧 减少序列长度 (max_length)",
+                "🔧 使用CPU卸载 (offload_to_cpu=True)"
+            ]
+            
+            self.logger.error(f"❌ CUDA内存不足: {error}")
+            self.logger.info("💡 建议解决方案:")
+            for suggestion in suggestions:
+                self.logger.info(f"   {suggestion}")
+                
+            # 自动生成修复配置
+            self.generate_memory_optimized_config()
+            
+        elif "device-side assert" in error_msg:
+            self.logger.error("❌ CUDA设备断言错误，可能是数据问题")
+            self.logger.info("💡 建议检查:")
+            self.logger.info("   🔍 数据格式是否正确")
+            self.logger.info("   🔍 标签范围是否合理")
+            self.logger.info("   🔍 输入长度是否超限")
+            
+    def generate_memory_optimized_config(self):
+        """生成内存优化配置"""
+        optimized_config = {
+            "training": {
+                "batch_size": 1,
+                "gradient_accumulation_steps": 16,
+                "fp16": True,
+                "dataloader_num_workers": 0,
+                "save_steps": 100,
+                "eval_steps": 100
+            },
+            "model": {
+                "gradient_checkpointing": True
+            },
+            "data": {
+                "max_length": 512
+            }
+        }
+        
+        config_file = self.log_dir / "memory_optimized_config.yaml"
+        import yaml
+        with open(config_file, 'w') as f:
+            yaml.dump(optimized_config, f, default_flow_style=False)
+            
+        self.logger.info(f"✅ 已生成内存优化配置: {config_file}")
+
+# 使用示例
+if __name__ == "__main__":
+    handler = TrainingErrorHandler()
+    
+    # 在训练代码中使用
+    try:
+        # 训练代码
+        pass
+    except RuntimeError as e:
+        if "cuda" in str(e).lower():
+            handler.handle_cuda_error(e)
+        raise
+```
+
+### ⚡ 性能优化建议
+
+```python
+# scripts/performance_optimizer.py
+import torch
+import psutil
+
+class PerformanceOptimizer:
+    def __init__(self):
+        self.gpu_memory = self.get_gpu_memory()
+        self.cpu_count = psutil.cpu_count()
+        self.system_memory = psutil.virtual_memory().total / 1024**3
+        
+    def get_gpu_memory(self):
+        """获取GPU内存信息"""
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_memory / 1024**3
+        return 0
+        
+    def optimize_training_args(self, base_config):
+        """根据硬件配置优化训练参数"""
+        optimized = base_config.copy()
+        
+        # 根据GPU内存调整批次大小
+        if self.gpu_memory > 0:
+            if self.gpu_memory >= 24:  # 24GB+
+                optimized['per_device_train_batch_size'] = 8
+                optimized['gradient_accumulation_steps'] = 2
+            elif self.gpu_memory >= 16:  # 16-24GB
+                optimized['per_device_train_batch_size'] = 4
+                optimized['gradient_accumulation_steps'] = 4
+            elif self.gpu_memory >= 8:   # 8-16GB
+                optimized['per_device_train_batch_size'] = 2
+                optimized['gradient_accumulation_steps'] = 8
+            else:  # <8GB
+                optimized['per_device_train_batch_size'] = 1
+                optimized['gradient_accumulation_steps'] = 16
+                optimized['fp16'] = True
+                optimized['gradient_checkpointing'] = True
+        
+        return optimized
+        
+    def print_optimization_report(self):
+        """打印优化报告"""
+        print("=== 性能优化报告 ===")
+        print(f"🖥️  GPU内存: {self.gpu_memory:.1f}GB")
+        print(f"💾 系统内存: {self.system_memory:.1f}GB")
+        print(f"⚙️  CPU核心: {self.cpu_count}")
+        
+        if self.gpu_memory >= 24:
+            print(f"📊 建议模型: 7B或更大模型")
+        elif self.gpu_memory >= 16:
+            print(f"📊 建议模型: 3B-7B模型")
+        elif self.gpu_memory >= 8:
+            print(f"📊 建议模型: 1B-3B模型")
+        else:
+            print(f"📊 建议模型: 小于1B模型或使用CPU")
+
+# 使用示例
+if __name__ == "__main__":
+    optimizer = PerformanceOptimizer()
+    optimizer.print_optimization_report()
+```
+
+```bash
+# 运行性能优化分析
+python scripts/performance_optimizer.py
+
+# 使用优化后的配置训练
+python scripts/error_handler.py --generate_config
+python main.py --config logs/memory_optimized_config.yaml
+```
+
 ### 常见问题
 
 1. **内存不足**
    - 减少批大小 (`per_device_train_batch_size`)
    - 增加梯度累积步数 (`gradient_accumulation_steps`)
    - 使用混合精度训练 (`fp16: true`)
+   - 使用自动优化: `python scripts/performance_optimizer.py`
 
 2. **训练不收敛**
    - 调整学习率
    - 检查数据质量
    - 调整算法超参数
+   - 使用错误处理器: `python scripts/error_handler.py`
 
 3. **生成质量差**
    - 增加训练数据

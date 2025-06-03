@@ -74,19 +74,59 @@ class DataProcessor:
             self.tokenizer = tokenizer
             self.max_length = max_length
         
+        # Set column names from config with defaults
+        self.text_column = self.data_config.get('text_column', 'text')
+        self.prompt_column = self.data_config.get('prompt_column', 'prompt')
+        self.response_column = self.data_config.get('response_column', 'response')
+        self.chosen_column = self.data_config.get('chosen_column', 'chosen')
+        self.rejected_column = self.data_config.get('rejected_column', 'rejected')
+        self.label_column = self.data_config.get('label_column', 'label')
+        self.conversation_column = self.data_config.get('conversation_column', 'conversation')
+        
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
     
     def process_data(self) -> None:
-        """Main data processing pipeline"""
+        """Main data processing pipeline with optimized multi-dataset support"""
         # Check dependencies
         if not HAS_DATASETS:
             self.logger.warning("datasets library not available. Data processing will be skipped.")
             self.logger.info("To enable data processing, install datasets: pip install datasets")
             return
             
-        self.logger.info("Starting data processing pipeline")
+        self.logger.info("Starting optimized data processing pipeline")
         
+        # Process all algorithm datasets
+        datasets_config = self.data_config.get('datasets', {})
+        
+        for algorithm_type in ['sft', 'reward', 'rlhf']:
+            if algorithm_type in datasets_config:
+                self.logger.info(f"Processing {algorithm_type} datasets...")
+                self._process_algorithm_datasets(algorithm_type)
+        
+        # Fallback to legacy single file processing if no multi-dataset config
+        if not datasets_config:
+            self.logger.info("No multi-dataset config found, using legacy processing...")
+            self._process_legacy_datasets()
+        
+        self.logger.info("Data processing completed")
+    
+    def _process_algorithm_datasets(self, algorithm_type: str) -> None:
+        """Process datasets for a specific algorithm"""
+        from .merger import merge_datasets_for_algorithm, merge_validation_datasets_for_algorithm
+        
+        # Process training datasets
+        train_file = merge_datasets_for_algorithm(self.config, algorithm_type)
+        if train_file:
+            self.logger.info(f"Training data for {algorithm_type} merged to: {train_file}")
+        
+        # Process validation datasets
+        eval_file = merge_validation_datasets_for_algorithm(self.config, algorithm_type)
+        if eval_file:
+            self.logger.info(f"Validation data for {algorithm_type} merged to: {eval_file}")
+    
+    def _process_legacy_datasets(self) -> None:
+        """Legacy single dataset processing"""
         # Load raw datasets
         train_dataset = self._load_dataset('train')
         eval_dataset = self._load_dataset('validation')
@@ -102,8 +142,6 @@ class DataProcessor:
         self._save_processed_dataset(processed_train, 'train')
         if processed_eval:
             self._save_processed_dataset(processed_eval, 'validation')
-        
-        self.logger.info("Data processing completed")
     
     def _load_dataset(self, split: str) -> Optional[Any]:
         """Load dataset for given split"""
@@ -226,15 +264,15 @@ class DataProcessor:
         return processed
     
     def _extract_text_from_example(self, examples: Dict[str, List], index: int) -> str:
-        """Extract text from example based on common field names"""
-        # Try common field names
-        text_fields = ['text', 'prompt', 'input', 'question', 'instruction']
+        """Extract text from example based on configured field names"""
+        # Try configured field names first
+        text_fields = [self.text_column, self.prompt_column, 'input', 'question', 'instruction']
         
         for field in text_fields:
             if field in examples:
                 return examples[field][index]
         
-        # If no common field found, concatenate all string fields
+        # If no configured field found, concatenate all string fields
         text_parts = []
         for key, values in examples.items():
             if isinstance(values[index], str):
@@ -291,13 +329,13 @@ class DataProcessor:
         if dataset_type == "sft":
             # Process for SFT training
             def process_sft_example(example):
-                # Extract text and tokenize
-                if 'text' in example:
-                    text = example['text']
-                elif 'prompt' in example and 'response' in example:
-                    text = f"{example['prompt']}{self.tokenizer.eos_token}{example['response']}"
+                # Extract text and tokenize using configured column names
+                if self.text_column in example:
+                    text = example[self.text_column]
+                elif self.prompt_column in example and self.response_column in example:
+                    text = f"{example[self.prompt_column]}{self.tokenizer.eos_token}{example[self.response_column]}"
                 else:
-                    raise ValueError("SFT dataset must have 'text' or 'prompt'+'response' fields")
+                    raise ValueError(f"SFT dataset must have '{self.text_column}' or '{self.prompt_column}'+'{self.response_column}' fields")
                 
                 # Tokenize
                 tokens = self.tokenizer(
@@ -319,10 +357,10 @@ class DataProcessor:
         elif dataset_type == "preference":
             # Process for preference learning (DPO, etc.)
             def process_preference_example(example):
-                # Extract prompt, chosen, and rejected
-                prompt = example.get('prompt', '')
-                chosen = example.get('chosen', '')
-                rejected = example.get('rejected', '')
+                # Extract prompt, chosen, and rejected using configured column names
+                prompt = example.get(self.prompt_column, '')
+                chosen = example.get(self.chosen_column, '')
+                rejected = example.get(self.rejected_column, '')
                 
                 # Tokenize each part
                 prompt_tokens = self.tokenizer(
@@ -382,10 +420,10 @@ class PreferenceDataProcessor(DataProcessor):
         }
         
         for i in range(len(examples[list(examples.keys())[0]])):
-            # Extract prompt, chosen, and rejected responses
-            prompt = examples.get('prompt', [''])[i]
-            chosen = examples.get('chosen', [''])[i]
-            rejected = examples.get('rejected', [''])[i]
+            # Extract prompt, chosen, and rejected responses using configured column names
+            prompt = examples.get(self.prompt_column, [''])[i]
+            chosen = examples.get(self.chosen_column, [''])[i]
+            rejected = examples.get(self.rejected_column, [''])[i]
             
             # Tokenize prompt
             prompt_tokenized = self.tokenizer(
@@ -440,9 +478,9 @@ class RLHFDataProcessor(DataProcessor):
         }
         
         for i in range(len(examples[list(examples.keys())[0]])):
-            # Extract query and response
-            query = examples.get('query', examples.get('prompt', ['']))[i]
-            response = examples.get('response', [''])[i]
+            # Extract query and response using configured column names
+            query = examples.get('query', examples.get(self.prompt_column, ['']))[i]
+            response = examples.get(self.response_column, [''])[i]
             reward = examples.get('reward', [0.0])[i]
             
             # Tokenize query

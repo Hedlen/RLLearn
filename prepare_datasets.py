@@ -67,6 +67,152 @@ class DatasetPreparer:
         else:
             self.tokenizer = None
     
+    def split_dataset(self, input_file: str, train_ratio: float = 0.8, 
+                     output_train_file: Optional[str] = None, 
+                     output_val_file: Optional[str] = None,
+                     shuffle: bool = True, random_seed: int = 42) -> tuple[str, str]:
+        """
+        将数据集拆分为训练集和验证集
+        
+        Args:
+            input_file: 输入数据文件路径
+            train_ratio: 训练集比例 (0-1)
+            output_train_file: 训练集输出文件路径，如果为None则自动生成
+            output_val_file: 验证集输出文件路径，如果为None则自动生成
+            shuffle: 是否打乱数据
+            random_seed: 随机种子
+            
+        Returns:
+            (训练集文件路径, 验证集文件路径)
+        """
+        logger.info(f"开始拆分数据集: {input_file}")
+        
+        # 读取数据
+        with open(input_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if content.startswith('['):
+                # JSON数组格式
+                data = json.loads(content)
+            else:
+                # JSONL格式
+                f.seek(0)
+                data = [json.loads(line) for line in f]
+        
+        # 打乱数据
+        if shuffle:
+            import random
+            random.seed(random_seed)
+            random.shuffle(data)
+        
+        # 计算拆分点
+        total_samples = len(data)
+        train_size = int(total_samples * train_ratio)
+        
+        train_data = data[:train_size]
+        val_data = data[train_size:]
+        
+        # 生成输出文件路径
+        if output_train_file is None:
+            base_name = Path(input_file).stem
+            output_train_file = f"{self.output_dir}/{base_name}_train.json"
+        
+        if output_val_file is None:
+            base_name = Path(input_file).stem
+            output_val_file = f"{self.output_dir}/{base_name}_val.json"
+        
+        # 保存训练集
+        with open(output_train_file, 'w', encoding='utf-8') as f:
+            for item in train_data:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        
+        # 保存验证集
+        with open(output_val_file, 'w', encoding='utf-8') as f:
+            for item in val_data:
+                f.write(json.dumps(item, ensure_ascii=False) + '\n')
+        
+        logger.info(f"数据集拆分完成:")
+        logger.info(f"  总样本数: {total_samples}")
+        logger.info(f"  训练集: {len(train_data)} 样本 -> {output_train_file}")
+        logger.info(f"  验证集: {len(val_data)} 样本 -> {output_val_file}")
+        
+        return output_train_file, output_val_file
+    
+    def prepare_split_datasets(self, config_file: str, algorithm_type: str = 'sft',
+                              train_ratio: float = 0.8, shuffle: bool = True, 
+                              random_seed: int = 42) -> str:
+        """
+        根据配置文件准备拆分后的数据集
+        
+        Args:
+            config_file: 配置文件路径
+            algorithm_type: 算法类型 ('sft', 'reward', 'rlhf')
+            train_ratio: 训练集比例
+            shuffle: 是否打乱数据
+            random_seed: 随机种子
+            
+        Returns:
+            更新后的配置文件路径
+        """
+        logger.info(f"开始准备 {algorithm_type} 算法的拆分数据集")
+        
+        # 读取配置文件
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        data_config = config.get('data', {})
+        datasets_config = data_config.get('datasets', {})
+        algo_config = datasets_config.get(algorithm_type, {})
+        
+        train_files = algo_config.get('train_files', [])
+        if not train_files:
+            logger.warning(f"配置文件中没有找到 {algorithm_type} 的训练文件配置")
+            return config_file
+        
+        # 处理每个训练文件
+        validation_files = []
+        
+        for i, file_config in enumerate(train_files):
+            input_file = file_config.get('path')
+            if not input_file or not os.path.exists(input_file):
+                logger.warning(f"训练文件不存在: {input_file}")
+                continue
+            
+            # 拆分数据集
+            train_file, val_file = self.split_dataset(
+                input_file=input_file,
+                train_ratio=train_ratio,
+                shuffle=shuffle,
+                random_seed=random_seed + i  # 为每个文件使用不同的种子
+            )
+            
+            # 更新训练文件路径
+            file_config['path'] = train_file
+            
+            # 添加验证文件配置
+            validation_files.append({
+                'path': val_file,
+                'weight': file_config.get('weight', 1.0),
+                'name': f"{file_config.get('name', f'dataset_{i}')}_val"
+            })
+        
+        # 更新配置
+        algo_config['validation_files'] = validation_files
+        
+        # 保存更新后的配置
+        output_config_file = config_file.replace('.json', '_split.json').replace('.yaml', '_split.yaml')
+        
+        if config_file.endswith('.json'):
+            with open(output_config_file, 'w', encoding='utf-8') as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+        else:
+            # YAML格式
+            import yaml
+            with open(output_config_file, 'w', encoding='utf-8') as f:
+                yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+        
+        logger.info(f"拆分数据集配置已保存到: {output_config_file}")
+        return output_config_file
+
     def download_hh_rlhf(self, subset: str = "helpful-base", max_samples: Optional[int] = None) -> str:
         """
         下载Anthropic HH-RLHF数据集
@@ -783,6 +929,17 @@ def main():
     parser.add_argument("--split_ratio", type=float, default=0.9, help="训练集比例")
     parser.add_argument("--validate_only", action="store_true", help="仅验证现有数据")
     
+    # 数据集拆分相关参数
+    parser.add_argument("--split_dataset", type=str, help="要拆分的数据集文件路径")
+    parser.add_argument("--train_ratio", type=float, default=0.8, help="训练集比例 (用于数据集拆分)")
+    parser.add_argument("--shuffle", action="store_true", default=True, help="拆分时是否打乱数据")
+    parser.add_argument("--random_seed", type=int, default=42, help="随机种子")
+    
+    # 配置文件拆分相关参数
+    parser.add_argument("--split_config", type=str, help="要处理的配置文件路径")
+    parser.add_argument("--algorithm_type", type=str, choices=["sft", "reward", "rlhf"], 
+                       default="sft", help="算法类型 (用于配置文件拆分)")
+    
     args = parser.parse_args()
     
     print("=== RL Learning Framework 数据集准备 ===")
@@ -792,6 +949,33 @@ def main():
     
     # 创建数据准备器
     preparer = DatasetPreparer(args.output_dir, args.tokenizer)
+    
+    # 处理数据集拆分
+    if args.split_dataset:
+        print("\n=== 数据集拆分 ===")
+        train_file, val_file = preparer.split_dataset(
+            input_file=args.split_dataset,
+            train_ratio=args.train_ratio,
+            shuffle=args.shuffle,
+            random_seed=args.random_seed
+        )
+        print(f"拆分完成:")
+        print(f"  训练集: {train_file}")
+        print(f"  验证集: {val_file}")
+        return
+    
+    # 处理配置文件拆分
+    if args.split_config:
+        print("\n=== 配置文件数据集拆分 ===")
+        output_config = preparer.prepare_split_datasets(
+            config_file=args.split_config,
+            algorithm_type=args.algorithm_type,
+            train_ratio=args.train_ratio,
+            shuffle=args.shuffle,
+            random_seed=args.random_seed
+        )
+        print(f"配置文件拆分完成: {output_config}")
+        return
     
     if args.validate_only:
         # 仅验证现有数据

@@ -167,7 +167,8 @@ def tokenize_batch(texts: List[str],
 def create_preference_pairs(dataset: Any,
                            response_column: str = 'response',
                            score_column: str = 'score',
-                           prompt_column: str = 'prompt') -> Any:
+                           prompt_column: str = 'prompt',
+                           data_config: Optional[Dict[str, Any]] = None) -> Any:
     """Create preference pairs from scored responses
     
     Args:
@@ -175,10 +176,15 @@ def create_preference_pairs(dataset: Any,
         response_column: Column containing responses
         score_column: Column containing scores
         prompt_column: Column containing prompts
+        data_config: Data configuration dict to override column names
         
     Returns:
         Dataset with preference pairs
     """
+    # Use config values if provided
+    if data_config:
+        response_column = data_config.get('response_column', response_column)
+        prompt_column = data_config.get('prompt_column', prompt_column)
     # Group by prompt
     prompt_groups = {}
     for example in dataset:
@@ -251,7 +257,8 @@ def filter_by_length(dataset: Any,
                     tokenizer: Any,
                     min_length: int = 10,
                     max_length: int = 512,
-                    text_column: str = 'text') -> Any:
+                    text_column: str = 'text',
+                    data_config: Optional[Dict[str, Any]] = None) -> Any:
     """Filter dataset by text length
     
     Args:
@@ -260,10 +267,15 @@ def filter_by_length(dataset: Any,
         min_length: Minimum token length
         max_length: Maximum token length
         text_column: Column containing text
+        data_config: Data configuration dict to override column names
         
     Returns:
         Filtered dataset
     """
+    # Use config values if provided
+    if data_config:
+        text_column = data_config.get('text_column', text_column)
+        max_length = data_config.get('max_length', max_length)
     def filter_fn(example):
         text = example[text_column]
         tokens = tokenizer.encode(text)
@@ -274,17 +286,22 @@ def filter_by_length(dataset: Any,
 
 def balance_dataset(dataset: Any,
                    label_column: str = 'label',
-                   max_samples_per_class: Optional[int] = None) -> Any:
+                   max_samples_per_class: Optional[int] = None,
+                   data_config: Optional[Dict[str, Any]] = None) -> Any:
     """Balance dataset by class labels
     
     Args:
         dataset: Dataset to balance
         label_column: Column containing labels
         max_samples_per_class: Maximum samples per class
+        data_config: Data configuration dict to override column names
         
     Returns:
         Balanced dataset
     """
+    # Use config values if provided
+    if data_config:
+        label_column = data_config.get('label_column', label_column)
     # Group by label
     label_groups = {}
     for i, example in enumerate(dataset):
@@ -372,13 +389,15 @@ def create_conversation_dataset(conversations: List[List[Dict[str, str]]],
 
 def compute_dataset_stats(dataset: Any,
                          text_columns: List[str] = None,
-                         tokenizer: Optional[Any] = None) -> Dict[str, Any]:
+                         tokenizer: Optional[Any] = None,
+                         data_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Compute statistics for dataset
     
     Args:
         dataset: Dataset to analyze
         text_columns: Columns containing text
         tokenizer: Tokenizer for token-level stats
+        data_config: Data configuration dict to override column names
         
     Returns:
         Dictionary of statistics
@@ -389,8 +408,18 @@ def compute_dataset_stats(dataset: Any,
     }
     
     if text_columns is None:
-        text_columns = ['text', 'prompt', 'response', 'chosen', 'rejected']
-        text_columns = [col for col in text_columns if col in dataset.column_names]
+        # Use configured column names if available
+        if data_config:
+            text_columns = [
+                data_config.get('text_column', 'text'),
+                data_config.get('prompt_column', 'prompt'),
+                data_config.get('response_column', 'response'),
+                data_config.get('chosen_column', 'chosen'),
+                data_config.get('rejected_column', 'rejected')
+            ]
+        else:
+            text_columns = ['text', 'prompt', 'response', 'chosen', 'rejected']
+    text_columns = [col for col in text_columns if col in dataset.column_names]
     
     for col in text_columns:
         if col in dataset.column_names:

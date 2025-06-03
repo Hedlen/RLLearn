@@ -20,7 +20,7 @@ training:
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 4
-  learning_rate: 5e-5
+  learning_rate: 0.00005
   warmup_steps: 100
   warmup_ratio: 0.0
   max_grad_norm: 1.0
@@ -48,7 +48,7 @@ training:
   # Optimization
   adam_beta1: 0.9
   adam_beta2: 0.999
-  adam_epsilon: 1e-8
+  adam_epsilon: 0.00000001
   
   # DataLoader
   dataloader_num_workers: 4
@@ -128,7 +128,7 @@ algorithms:
   
   # PPO Configuration
   ppo:
-    learning_rate: 1.41e-5
+    learning_rate: 0.0000141
     mini_batch_size: 1
     batch_size: 8
     ppo_epochs: 4
@@ -144,7 +144,7 @@ algorithms:
   # DPO Configuration
   dpo:
     beta: 0.1
-    learning_rate: 5e-7
+    learning_rate: 0.0000005
     max_length: 2048
     max_prompt_length: 1024
     label_smoothing: 0.0
@@ -152,7 +152,7 @@ algorithms:
     
   # GRPO Configuration
   grpo:
-    learning_rate: 1e-5
+    learning_rate: 0.00001
     group_size: 8
     temperature: 1.0
     kl_penalty: 0.1
@@ -163,10 +163,84 @@ data:
   dataset_name: null  # HuggingFace dataset name
   dataset_config: null  # Dataset configuration
   
-  # Local files (choose one approach)
-  train_file: null  # "./data/train.json"  # 训练数据文件
-  validation_file: null  # "./data/eval.json"  # 验证数据文件
-  test_file: null  # "./data/test.json"  # 测试数据文件
+  # Multiple datasets configuration (支持多个数据集)
+  datasets:
+    sft:
+      # SFT训练数据集列表
+      train_files:
+        - path: "./data/alpaca_chinese_sft.json"
+          weight: 1.0  # 数据集权重，用于采样
+          name: "alpaca_chinese"  # 数据集名称
+        # 可以添加更多SFT数据集
+        # - path: "./data/another_sft.json"
+        #   weight: 0.5
+        #   name: "another_dataset"
+      
+      # 验证数据集列表 (支持多个验证数据集自动合并)
+      validation_files:
+        - path: "./data/alpaca_chinese_eval.json"
+          weight: 1.0  # 验证集权重，用于合并时的采样比例
+          name: "alpaca_chinese_eval"
+        # 可以添加更多验证数据集
+        # - path: "./data/another_eval.json"
+        #   weight: 0.8
+        #   name: "another_eval"
+      
+      # 是否合并所有训练数据集
+      merge_datasets: true
+      # 合并后的缓存文件路径
+      merged_cache_path: "./cache/merged_sft_train.json"
+      # 合并后的验证集缓存路径
+      merged_validation_cache_path: "./cache/merged_sft_validation.json"
+    
+    reward:
+      # 奖励模型训练数据集
+      train_files:
+        - path: "./data/preference_train.json"
+          weight: 1.0
+          name: "preference_data"
+      
+      # 验证数据集列表 (支持多个验证数据集自动合并)
+      validation_files:
+        - path: "./data/preference_eval.json"
+          weight: 1.0  # 验证集权重，用于合并时的采样比例
+          name: "preference_eval"
+        # 可以添加更多验证数据集
+        # - path: "./data/another_preference_eval.json"
+        #   weight: 0.9
+        #   name: "another_preference_eval"
+      
+      merge_datasets: true
+      merged_cache_path: "./cache/merged_reward_train.json"
+      # 合并后的验证集缓存路径
+      merged_validation_cache_path: "./cache/merged_reward_validation.json"
+    
+    rlhf:
+      # RLHF训练数据集（PPO/DPO等）
+      train_files:
+        - path: "./data/rlhf_train.json"
+          weight: 1.0
+          name: "rlhf_data"
+      
+      # 验证数据集列表 (支持多个验证数据集自动合并)
+      validation_files:
+        - path: "./data/rlhf_eval.json"
+          weight: 1.0  # 验证集权重，用于合并时的采样比例
+          name: "rlhf_eval"
+        # 可以添加更多验证数据集
+        # - path: "./data/another_rlhf_eval.json"
+        #   weight: 1.0
+        #   name: "another_rlhf_eval"
+      
+      merge_datasets: false
+      merged_cache_path: "./cache/merged_rlhf_train.json"
+      # 合并后的验证集缓存路径
+      merged_validation_cache_path: "./cache/merged_rlhf_validation.json"
+  
+  # Legacy single file configuration (向后兼容)
+  train_file: null  # 如果设置，将覆盖datasets配置
+  validation_file: null
+  test_file: null
   
   # Data processing
   max_train_samples: null  # 限制训练样本数量
@@ -174,6 +248,8 @@ data:
   preprocessing_num_workers: 4
   overwrite_cache: false
   validation_split_percentage: 10
+  max_length: 512  # 最大序列长度
+  cache_dir: "./cache"  # 缓存目录
   
   # Data format
   data_format: "json"  # "json", "jsonl", "csv"
@@ -188,6 +264,19 @@ data:
   conversation_column: "conversation"  # 对话列名
   prompt_column: "prompt"  # 提示列名
   response_column: "response"  # 回复列名
+  
+  # Data merging configuration
+  merge_config:
+    # 数据合并策略
+    strategy: "weighted_sampling"  # "concat", "weighted_sampling", "balanced"
+    # 随机种子
+    seed: 42
+    # 是否打乱合并后的数据
+    shuffle: true
+    # 最大合并样本数
+    max_merged_samples: null
+    # 是否保存合并统计信息
+    save_merge_stats: true
 
 # RLHF Configuration
 rlhf:

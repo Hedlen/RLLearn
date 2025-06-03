@@ -114,7 +114,6 @@ def test_evaluation():
         
         # Test model evaluator
         model_evaluator = ModelEvaluator(
-            model_name_or_path="Qwen/Qwen2.5-3B-Instruct",
             tokenizer=tokenizer
         )
         

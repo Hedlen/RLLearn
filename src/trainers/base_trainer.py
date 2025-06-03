@@ -454,9 +454,8 @@ class BaseTrainer(ABC):
             step=self.global_step,
             loss=current_metrics.get('loss', 0.0),
             metrics=current_metrics,
-            save_dir=checkpoint_dir,
-            checkpoint_name=checkpoint_name,
-            max_checkpoints=self.config.save_total_limit
+            checkpoint_dir=checkpoint_dir,
+            filename=checkpoint_name
         )
         
         self.logger.info(f"Checkpoint saved: {checkpoint_name}")
