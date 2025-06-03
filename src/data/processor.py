@@ -332,10 +332,21 @@ class DataProcessor:
                 # Extract text and tokenize using configured column names
                 if self.text_column in example:
                     text = example[self.text_column]
-                elif self.prompt_column in example and self.response_column in example:
-                    text = f"{example[self.prompt_column]}{self.tokenizer.eos_token}{example[self.response_column]}"
+                elif self.prompt_column in example:
+                    # Try multiple response field names
+                    response_fields = [self.response_column, 'reference', 'answer', 'output', 'completion']
+                    response = None
+                    for field in response_fields:
+                        if field in example:
+                            response = example[field]
+                            break
+                    
+                    if response is not None:
+                        text = f"{example[self.prompt_column]}{self.tokenizer.eos_token}{response}"
+                    else:
+                        raise ValueError(f"SFT dataset must have '{self.text_column}' or '{self.prompt_column}' with one of {response_fields} fields")
                 else:
-                    raise ValueError(f"SFT dataset must have '{self.text_column}' or '{self.prompt_column}'+'{self.response_column}' fields")
+                    raise ValueError(f"SFT dataset must have '{self.text_column}' or '{self.prompt_column}' field")
                 
                 # Tokenize
                 tokens = self.tokenizer(
