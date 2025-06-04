@@ -394,12 +394,18 @@ class RewardModel(nn.Module):
 
 def create_reward_model(model_name_or_path: str,
                        config: Optional[RewardModelConfig] = None,
+                       use_peft: bool = False,
+                       peft_config: Optional[Dict[str, Any]] = None,
+                       quantization_config: Optional[Dict[str, Any]] = None,
                        **kwargs) -> Tuple[RewardModel, PreTrainedTokenizer]:
-    """Create reward model and tokenizer
+    """Create reward model and tokenizer with optional PEFT support
     
     Args:
         model_name_or_path: Model name or path
         config: Reward model configuration
+        use_peft: Whether to use PEFT (LoRA)
+        peft_config: PEFT configuration dict
+        quantization_config: Quantization configuration for QLoRA
         **kwargs: Additional arguments for RewardModelConfig
         
     Returns:
@@ -412,13 +418,67 @@ def create_reward_model(model_name_or_path: str,
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # Prepare model loading arguments
+    model_kwargs = {}
+    
+    # Add quantization config for QLoRA
+    if use_peft and quantization_config:
+        try:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=quantization_config.get('load_in_4bit', True),
+                bnb_4bit_quant_type=quantization_config.get('bnb_4bit_quant_type', 'nf4'),
+                bnb_4bit_compute_dtype=getattr(torch, quantization_config.get('bnb_4bit_compute_dtype', 'float16')),
+                bnb_4bit_use_double_quant=quantization_config.get('bnb_4bit_use_double_quant', True)
+            )
+            model_kwargs['quantization_config'] = bnb_config
+            print(f"QLoRA enabled for reward model: {quantization_config}")
+        except ImportError:
+            print("Warning: bitsandbytes not available, falling back to regular LoRA")
+    
+    # Load base model
+    base_model = AutoModel.from_pretrained(model_name_or_path, **model_kwargs)
+    
+    # Apply PEFT if requested
+    if use_peft and peft_config:
+        try:
+            from peft import LoraConfig, get_peft_model
+            
+            # Create LoRA config
+            lora_config = LoraConfig(
+                r=peft_config.get('r', 16),
+                lora_alpha=peft_config.get('lora_alpha', 32),
+                target_modules=peft_config.get('target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
+                lora_dropout=peft_config.get('lora_dropout', 0.1),
+                bias=peft_config.get('bias', 'none'),
+                task_type="FEATURE_EXTRACTION"  # For reward model
+            )
+            
+            # Apply LoRA to base model
+            base_model = get_peft_model(base_model, lora_config)
+            
+            # Print LoRA info
+            print(f"LoRA applied to reward model:")
+            print(f"  - Rank (r): {lora_config.r}")
+            print(f"  - Alpha: {lora_config.lora_alpha}")
+            print(f"  - Target modules: {lora_config.target_modules}")
+            print(f"  - Dropout: {lora_config.lora_dropout}")
+            
+            # Print trainable parameters
+            trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in base_model.parameters())
+            print(f"  - Trainable parameters: {trainable_params:,} ({100 * trainable_params / total_params:.2f}%)")
+            
+        except ImportError:
+            print("Warning: PEFT library not available, using full fine-tuning for reward model")
+    
     # Create config if not provided
     if config is None:
         config_kwargs = {'model_name_or_path': model_name_or_path}
         config_kwargs.update(kwargs)
         config = RewardModelConfig(**config_kwargs)
     
-    # Create reward model
-    reward_model = RewardModel(config)
+    # Create reward model with the (potentially PEFT-enabled) base model
+    reward_model = RewardModel(config, base_model=base_model)
     
     return reward_model, tokenizer

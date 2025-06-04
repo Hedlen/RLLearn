@@ -2,16 +2,25 @@
 
 # Model Configuration
 model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"  # Qwen2.5-3B-Instruct model
   model_name_or_path: "Qwen/Qwen2.5-1.5B-Instruct"  # HuggingFace model path
   tokenizer_name_or_path: null  # 默认使用与模型相同的tokenizer
   max_length: 2048  # Qwen模型支持更长的序列长度
+  
+  # PEFT Configuration - 设置为false则使用全量微调
   use_peft: true
   peft_config:
-    r: 16
-    lora_alpha: 32
-    lora_dropout: 0.1
+    r: 16                    # LoRA rank，越大参数越多，通常8-64
+    lora_alpha: 32          # LoRA scaling参数，通常设为r的2倍
+    lora_dropout: 0.1       # LoRA dropout率
     target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # Qwen2.5模型的注意力和MLP层
+    bias: "none"            # 偏置处理方式: "none", "all", "lora_only"
+  
+  # Quantization Configuration - 用于QLoRA (4bit量化)
+  quantization_config:
+    load_in_4bit: true                    # 是否使用4bit量化
+    bnb_4bit_quant_type: "nf4"           # 量化类型: "fp4" 或 "nf4"
+    bnb_4bit_compute_dtype: "float16"    # 计算数据类型
+    bnb_4bit_use_double_quant: true      # 是否使用双重量化
 
 # Training Configuration
 training:
@@ -157,6 +166,90 @@ algorithms:
     group_size: 8
     temperature: 1.0
     kl_penalty: 0.1
+    
+    # Reward Configuration - 选择使用reward model或custom reward function
+    reward_config:
+      # 奖励类型: "model" 使用训练好的reward model, "function" 使用自定义reward function
+      reward_type: "model"  # "model" or "function"
+      
+      # 当reward_type为"function"时的配置
+      reward_function:
+        # 自定义奖励函数的模块路径
+        module_path: "src.rewards.custom_rewards"
+        # 自定义奖励函数的函数名或类名
+        function_name: "length_based_reward"  # 可选: length_based_reward, keyword_based_reward, quality_based_reward, task_specific_reward, combined_reward, ConfigurableReward
+        # 函数参数（如果需要）
+        function_kwargs:
+          # 示例参数，根据具体函数调整
+          min_length: 10
+          max_length: 200
+          optimal_length: 100
+          # keywords: ["good", "excellent", "amazing"]  # for keyword_based_reward
+          # weights: {"length": 0.3, "keyword": 0.4, "quality": 0.3}  # for combined_reward
+      
+      # 当reward_type为"model"时的配置（保持原有配置）
+      reward_model:
+        # 这些配置将在reward_type为"model"时使用
+        # 具体配置在rlhf.reward_model_path中指定
+  
+  # RLHF Configuration - 作为独立的强化学习算法
+  rlhf:
+    # RLHF算法类型选择
+    algorithm_type: "ppo"  # "ppo", "dpo", "grpo" - 选择具体的RLHF算法实现
+    
+    # 通用RLHF参数
+    learning_rate: 0.00001
+    batch_size: 8
+    mini_batch_size: 1
+    max_new_tokens: 1024
+    temperature: 1.0
+    top_k: 0
+    top_p: 1.0
+    do_sample: true
+    
+    # KL散度控制
+    kl_coef: 0.1
+    adaptive_kl: false
+    target_kl: 6.0
+    kl_penalty: 0.1
+    
+    # 奖励处理
+    use_score_scaling: true
+    use_score_norm: true
+    score_clip: 5.0
+    
+    # PPO特定参数（当algorithm_type为"ppo"时使用）
+    ppo_epochs: 4
+    gamma: 1.0
+    gae_lambda: 0.95
+    clip_range: 0.2
+    clip_range_vf: null
+    vf_coef: 0.1
+    ent_coef: 0.0
+    max_grad_norm: 0.5
+    
+    # DPO特定参数（当algorithm_type为"dpo"时使用）
+    beta: 0.1
+    max_length: 2048
+    max_prompt_length: 1024
+    label_smoothing: 0.0
+    loss_type: "sigmoid"  # "sigmoid", "hinge", "ipo"
+    
+    # GRPO特定参数（当algorithm_type为"grpo"时使用）
+    group_size: 8
+    
+    # 奖励配置（继承GRPO的reward_config设计）
+    reward_config:
+      reward_type: "model"  # "model" or "function"
+      reward_function:
+        module_path: "src.rewards.custom_rewards"
+        function_name: "length_based_reward"
+        function_kwargs:
+          min_length: 10
+          max_length: 200
+          optimal_length: 100
+      reward_model:
+        # 使用全局rlhf配置中的reward_model_path
 
 # Data Configuration
 data:

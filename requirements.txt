@@ -4,6 +4,7 @@ transformers>=4.30.0
 datasets>=2.12.0
 accelerate>=0.20.0
 peft>=0.4.0
+bitsandbytes>=0.41.0  # For QLoRA quantization
 trl>=0.4.7
 
 # Reinforcement Learning

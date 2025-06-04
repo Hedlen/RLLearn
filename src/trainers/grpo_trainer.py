@@ -63,6 +63,7 @@ class GRPOTrainer(BaseTrainer):
                  config: GRPOConfig,
                  policy_model: PolicyModel,
                  reward_model: Optional[RewardModel] = None,
+                 reward_function: Optional[callable] = None,
                  value_model: Optional[PolicyModel] = None,
                  tokenizer=None,
                  train_dataloader: Optional[DataLoader] = None,
@@ -84,7 +85,15 @@ class GRPOTrainer(BaseTrainer):
         
         self.policy_model = policy_model
         self.reward_model = reward_model
+        self.reward_function = reward_function
         self.value_model = value_model or policy_model  # Use policy model as value model if not provided
+        
+        # Validate reward configuration
+        if self.reward_model is None and self.reward_function is None:
+            self.logger.warning("No reward model or reward function provided. Using dummy rewards (all zeros).")
+        elif self.reward_model is not None and self.reward_function is not None:
+            self.logger.warning("Both reward model and reward function provided. Using reward function.")
+            self.reward_model = None  # Prioritize reward function
         
         # Initialize reference model (frozen copy of policy model)
         self.ref_model = self._create_reference_model()
@@ -212,10 +221,63 @@ class GRPOTrainer(BaseTrainer):
         Returns:
             List of reward scores
         """
-        if self.reward_model is None:
-            # Use dummy rewards if no reward model is provided
+        # Priority: reward_function > reward_model > dummy rewards
+        if self.reward_function is not None:
+            # Use custom reward function
+            return self._compute_rewards_with_function(prompts, responses)
+        elif self.reward_model is not None:
+            # Use reward model
+            return self._compute_rewards_with_model(prompts, responses)
+        else:
+            # Use dummy rewards if no reward source is provided
             return [0.0] * len(responses)
+    
+    def _compute_rewards_with_function(self,
+                                      prompts: List[str],
+                                      responses: List[str]) -> List[float]:
+        """Compute rewards using custom reward function
         
+        Args:
+            prompts: List of prompts
+            responses: List of responses
+            
+        Returns:
+            List of reward scores
+        """
+        rewards = []
+        
+        for prompt, response in zip(prompts, responses):
+            try:
+                # Call custom reward function
+                reward = self.reward_function(prompt, response)
+                
+                # Ensure reward is a float
+                if isinstance(reward, (int, float)):
+                    rewards.append(float(reward))
+                elif isinstance(reward, torch.Tensor):
+                    rewards.append(reward.item())
+                else:
+                    self.logger.warning(f"Invalid reward type {type(reward)}, using 0.0")
+                    rewards.append(0.0)
+                    
+            except Exception as e:
+                self.logger.error(f"Error in reward function: {e}, using 0.0")
+                rewards.append(0.0)
+        
+        return rewards
+    
+    def _compute_rewards_with_model(self,
+                                   prompts: List[str],
+                                   responses: List[str]) -> List[float]:
+        """Compute rewards using reward model
+        
+        Args:
+            prompts: List of prompts
+            responses: List of responses
+            
+        Returns:
+            List of reward scores
+        """
         self.reward_model.eval()
         rewards = []
         

@@ -182,7 +182,14 @@ def main():
                     model_name_or_path=config['model']['model_name_or_path'],
                     **config['training']
                 )
-                model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                # Create policy model with PEFT support
+                model_config = config['model']
+                model, tokenizer = create_policy_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
                 
                 # Get optimized data paths
                 train_file, eval_file = _get_algorithm_data_paths(config, 'sft')
@@ -215,7 +222,14 @@ def main():
                     model_name_or_path=config['model']['model_name_or_path'],
                     **config['training']
                 )
-                model, tokenizer = create_reward_model(config['model']['model_name_or_path'])
+                # Create reward model with PEFT support
+                model_config = config['model']
+                model, tokenizer = create_reward_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
                 
                 # Get optimized data paths
                 train_file, eval_file = _get_algorithm_data_paths(config, 'reward')
@@ -247,7 +261,14 @@ def main():
                     model_name_or_path=config['model']['model_name_or_path'],
                     **config['training']
                 )
-                policy_model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                # Create policy model with PEFT support
+                model_config = config['model']
+                policy_model, tokenizer = create_policy_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
                 value_model, _ = create_value_model(config['model']['model_name_or_path'])
                 
                 # Get optimized data paths (PPO typically uses SFT data)
@@ -280,7 +301,14 @@ def main():
                     model_name_or_path=config['model']['model_name_or_path'],
                     **config['training']
                 )
-                model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
+                # Create policy model with PEFT support
+                model_config = config['model']
+                model, tokenizer = create_policy_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
                 
                 # Get optimized data paths (DPO uses preference data like reward model)
                 train_file, eval_file = _get_algorithm_data_paths(config, 'reward')
@@ -312,8 +340,77 @@ def main():
                     model_name_or_path=config['model']['model_name_or_path'],
                     **config['training']
                 )
-                policy_model, tokenizer = create_policy_model(config['model']['model_name_or_path'])
-                reward_model, _ = create_reward_model(config['model']['model_name_or_path'])
+                # Create policy model with PEFT support
+                model_config = config['model']
+                policy_model, tokenizer = create_policy_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
+                # Create reward model or reward function based on configuration
+                reward_model = None
+                reward_function = None
+                
+                # Get GRPO reward configuration
+                grpo_config = config.get('algorithms', {}).get('grpo', {})
+                reward_config = grpo_config.get('reward_config', {})
+                reward_type = reward_config.get('reward_type', 'model')  # Default to 'model'
+                
+                if reward_type == 'function':
+                    # Use custom reward function
+                    reward_function_config = reward_config.get('reward_function', {})
+                    module_path = reward_function_config.get('module_path')
+                    function_name = reward_function_config.get('function_name')
+                    function_kwargs = reward_function_config.get('function_kwargs', {})
+                    
+                    if module_path and function_name:
+                        try:
+                            import importlib
+                            module = importlib.import_module(module_path)
+                            reward_function_class = getattr(module, function_name)
+                            
+                            # Check if it's a class or function
+                            if hasattr(reward_function_class, '__call__') and hasattr(reward_function_class, '__init__'):
+                                # It's a class, instantiate it with kwargs
+                                reward_function = reward_function_class(**function_kwargs)
+                                logger.info(f"Using custom reward function class: {module_path}.{function_name} with kwargs: {function_kwargs}")
+                            else:
+                                # It's a function, use it directly (kwargs will be passed during call)
+                                reward_function = reward_function_class
+                                logger.info(f"Using custom reward function: {module_path}.{function_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to load custom reward function {module_path}.{function_name}: {e}")
+                            logger.warning("Falling back to reward model")
+                            reward_type = 'model'
+                    else:
+                        logger.warning("Invalid reward function configuration (missing module_path or function_name), falling back to reward model")
+                        reward_type = 'model'
+                
+                if reward_type == 'model':
+                    # Use reward model
+                    rlhf_config = config.get('rlhf', {})
+                    reward_model_path = rlhf_config.get('reward_model_path')
+                    
+                    if reward_model_path and os.path.exists(reward_model_path):
+                        # Load pre-trained reward model
+                        logger.info(f"Loading pre-trained reward model from: {reward_model_path}")
+                        reward_model, _ = create_reward_model(
+                            model_name_or_path=reward_model_path,
+                            use_peft=False,  # Pre-trained model doesn't need PEFT
+                            peft_config=None,
+                            quantization_config=None
+                        )
+                    else:
+                        # Create new reward model (fallback)
+                        logger.warning(f"Reward model path not found: {reward_model_path}, creating new reward model")
+                        model_config = config['model']
+                        reward_model, _ = create_reward_model(
+                            model_name_or_path=model_config['model_name_or_path'],
+                            use_peft=model_config.get('use_peft', False),
+                            peft_config=model_config.get('peft_config'),
+                            quantization_config=model_config.get('quantization_config')
+                        )
                 
                 # Get optimized data paths (GRPO typically uses SFT data)
                 train_file, eval_file = _get_algorithm_data_paths(config, 'sft')
@@ -336,7 +433,204 @@ def main():
                     train_dataset, eval_file, processor, data_collator, training_config, "sft"
                 )
                 
-                trainer = GRPOTrainer(training_config, policy_model, reward_model, tokenizer, train_dataloader, eval_dataloader)
+                trainer = GRPOTrainer(
+                    training_config, 
+                    policy_model, 
+                    reward_model=reward_model,
+                    reward_function=reward_function,
+                    tokenizer=tokenizer, 
+                    train_dataloader=train_dataloader, 
+                    eval_dataloader=eval_dataloader
+                )
+            elif args.algorithm == "rlhf":
+                # RLHF training - unified interface for PPO/DPO/GRPO
+                rlhf_config = config.get('algorithms', {}).get('rlhf', {})
+                algorithm_type = rlhf_config.get('algorithm_type', 'ppo')  # Default to PPO
+                
+                logger.info(f"Starting RLHF training with {algorithm_type.upper()} algorithm")
+                
+                # Create policy model
+                model_config = config['model']
+                policy_model, tokenizer = create_policy_model(
+                    model_name_or_path=model_config['model_name_or_path'],
+                    use_peft=model_config.get('use_peft', False),
+                    peft_config=model_config.get('peft_config'),
+                    quantization_config=model_config.get('quantization_config')
+                )
+                
+                # Handle reward model/function based on RLHF configuration
+                reward_model = None
+                reward_function = None
+                
+                reward_config = rlhf_config.get('reward_config', {})
+                reward_type = reward_config.get('reward_type', 'model')
+                
+                if reward_type == 'function':
+                    # Use custom reward function
+                    reward_function_config = reward_config.get('reward_function', {})
+                    module_path = reward_function_config.get('module_path')
+                    function_name = reward_function_config.get('function_name')
+                    function_kwargs = reward_function_config.get('function_kwargs', {})
+                    
+                    if module_path and function_name:
+                        try:
+                            import importlib
+                            module = importlib.import_module(module_path)
+                            reward_function_class = getattr(module, function_name)
+                            
+                            if hasattr(reward_function_class, '__call__') and hasattr(reward_function_class, '__init__'):
+                                reward_function = reward_function_class(**function_kwargs)
+                                logger.info(f"Using custom reward function class: {module_path}.{function_name}")
+                            else:
+                                reward_function = reward_function_class
+                                logger.info(f"Using custom reward function: {module_path}.{function_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to load custom reward function: {e}")
+                            reward_type = 'model'
+                    else:
+                        logger.warning("Invalid reward function configuration, falling back to reward model")
+                        reward_type = 'model'
+                
+                if reward_type == 'model':
+                    # Use reward model
+                    global_rlhf_config = config.get('rlhf', {})
+                    reward_model_path = global_rlhf_config.get('reward_model_path')
+                    
+                    if reward_model_path and os.path.exists(reward_model_path):
+                        logger.info(f"Loading pre-trained reward model from: {reward_model_path}")
+                        reward_model, _ = create_reward_model(
+                            model_name_or_path=reward_model_path,
+                            use_peft=False,
+                            peft_config=None,
+                            quantization_config=None
+                        )
+                    else:
+                        logger.warning(f"Reward model path not found: {reward_model_path}, creating new reward model")
+                        reward_model, _ = create_reward_model(
+                            model_name_or_path=model_config['model_name_or_path'],
+                            use_peft=model_config.get('use_peft', False),
+                            peft_config=model_config.get('peft_config'),
+                            quantization_config=model_config.get('quantization_config')
+                        )
+                
+                # Get training data (RLHF typically uses SFT data for generation)
+                train_file, eval_file = _get_algorithm_data_paths(config, 'rlhf')
+                
+                if not train_file:
+                    # Fallback to SFT data if no RLHF data is configured
+                    logger.warning("No RLHF training data found, falling back to SFT data")
+                    train_file, eval_file = _get_algorithm_data_paths(config, 'sft')
+                
+                if not train_file:
+                    raise FileNotFoundError(f"No training data file found for RLHF training. Please configure datasets in config.yaml")
+                
+                logger.info(f"Loading RLHF training data from: {train_file}")
+                train_dataset = processor.load_dataset(train_file, dataset_type="sft")
+                
+                # Route to specific algorithm trainer based on algorithm_type
+                if algorithm_type == 'ppo':
+                    from src.trainers.ppo_trainer import PPOTrainingConfig, PPOTrainer
+                    from src.data.collator import DataCollatorForRL
+                    
+                    # Merge RLHF config with PPO-specific config
+                    ppo_config = {**config['training'], **rlhf_config}
+                    training_config = PPOTrainingConfig(
+                        model_name_or_path=config['model']['model_name_or_path'],
+                        **ppo_config
+                    )
+                    
+                    # Create value model for PPO
+                    value_model, _ = create_value_model(config['model']['model_name_or_path'])
+                    
+                    data_collator = DataCollatorForRL(
+                        tokenizer=tokenizer,
+                        max_length=training_config.max_length,
+                        padding=True
+                    )
+                    
+                    train_dataloader, eval_dataloader = _create_dataloaders(
+                        train_dataset, eval_file, processor, data_collator, training_config, "sft"
+                    )
+                    
+                    trainer = PPOTrainer(
+                        training_config, 
+                        policy_model, 
+                        value_model, 
+                        tokenizer, 
+                        train_dataloader, 
+                        eval_dataloader
+                    )
+                    
+                elif algorithm_type == 'dpo':
+                    from src.trainers.dpo_trainer import DPOTrainingConfig, DPOTrainer
+                    from src.data.collator import DataCollatorForPreference
+                    
+                    # Merge RLHF config with DPO-specific config
+                    dpo_config = {**config['training'], **rlhf_config}
+                    training_config = DPOTrainingConfig(
+                        model_name_or_path=config['model']['model_name_or_path'],
+                        **dpo_config
+                    )
+                    
+                    # DPO needs preference data
+                    train_file, eval_file = _get_algorithm_data_paths(config, 'reward')
+                    if not train_file:
+                        raise FileNotFoundError("DPO requires preference data. Please configure reward datasets.")
+                    
+                    train_dataset = processor.load_dataset(train_file, dataset_type="preference")
+                    
+                    data_collator = DataCollatorForPreference(
+                        tokenizer=tokenizer,
+                        max_length=training_config.max_length,
+                        padding=True
+                    )
+                    
+                    train_dataloader, eval_dataloader = _create_dataloaders(
+                        train_dataset, eval_file, processor, data_collator, training_config, "preference"
+                    )
+                    
+                    trainer = DPOTrainer(
+                        training_config, 
+                        policy_model, 
+                        tokenizer, 
+                        train_dataloader, 
+                        eval_dataloader
+                    )
+                    
+                elif algorithm_type == 'grpo':
+                    from src.trainers.grpo_trainer import GRPOConfig, GRPOTrainer
+                    from src.data.collator import DataCollatorForRL
+                    
+                    # Merge RLHF config with GRPO-specific config
+                    grpo_config = {**config['training'], **rlhf_config}
+                    training_config = GRPOConfig(
+                        model_name_or_path=config['model']['model_name_or_path'],
+                        **grpo_config
+                    )
+                    
+                    data_collator = DataCollatorForRL(
+                        tokenizer=tokenizer,
+                        max_length=training_config.max_length,
+                        padding=True
+                    )
+                    
+                    train_dataloader, eval_dataloader = _create_dataloaders(
+                        train_dataset, eval_file, processor, data_collator, training_config, "sft"
+                    )
+                    
+                    trainer = GRPOTrainer(
+                        training_config, 
+                        policy_model, 
+                        reward_model=reward_model,
+                        reward_function=reward_function,
+                        tokenizer=tokenizer, 
+                        train_dataloader=train_dataloader, 
+                        eval_dataloader=eval_dataloader
+                    )
+                    
+                else:
+                    raise ValueError(f"Unknown RLHF algorithm type: {algorithm_type}. Supported: ppo, dpo, grpo")
+                    
             else:
                 raise ValueError(f"Unknown algorithm: {args.algorithm}")
                 

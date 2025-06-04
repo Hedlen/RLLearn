@@ -456,23 +456,86 @@ class PolicyModel(nn.Module):
 
 def create_policy_model(model_name_or_path: str,
                        config: Optional[PolicyModelConfig] = None,
+                       use_peft: bool = False,
+                       peft_config: Optional[Dict[str, Any]] = None,
+                       quantization_config: Optional[Dict[str, Any]] = None,
                        **kwargs) -> Tuple[PolicyModel, PreTrainedTokenizer]:
-    """Create policy model and tokenizer
+    """Create policy model and tokenizer with optional PEFT support
     
     Args:
         model_name_or_path: Model name or path
         config: Policy model configuration
+        use_peft: Whether to use PEFT (LoRA/QLoRA)
+        peft_config: PEFT configuration dict
+        quantization_config: Quantization configuration for QLoRA
         **kwargs: Additional arguments for PolicyModelConfig
         
     Returns:
         Tuple of (policy_model, tokenizer)
     """
+    import torch
+    
+    # Import PEFT libraries if needed
+    if use_peft:
+        try:
+            from peft import LoraConfig, get_peft_model, TaskType
+            from transformers import BitsAndBytesConfig
+        except ImportError:
+            raise ImportError("PEFT library not found. Please install with: pip install peft")
+    
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
     
     # Add pad token if not present
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    
+    # Prepare model loading arguments
+    model_kwargs = {
+        'torch_dtype': torch.float16 if torch.cuda.is_available() else torch.float32,
+        'device_map': 'auto' if torch.cuda.is_available() else None,
+    }
+    
+    # Add quantization config for QLoRA
+    if quantization_config and use_peft:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=quantization_config.get('load_in_4bit', True),
+            bnb_4bit_quant_type=quantization_config.get('bnb_4bit_quant_type', 'nf4'),
+            bnb_4bit_compute_dtype=getattr(torch, quantization_config.get('bnb_4bit_compute_dtype', 'float16')),
+            bnb_4bit_use_double_quant=quantization_config.get('bnb_4bit_use_double_quant', True),
+        )
+        model_kwargs['quantization_config'] = bnb_config
+        model_kwargs['torch_dtype'] = None  # Let quantization handle dtype
+    
+    # Load base model
+    base_model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
+    
+    # Apply PEFT if requested
+    if use_peft and peft_config:
+        # Create LoRA config
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=peft_config.get('r', 16),
+            lora_alpha=peft_config.get('lora_alpha', 32),
+            lora_dropout=peft_config.get('lora_dropout', 0.1),
+            target_modules=peft_config.get('target_modules', ['q_proj', 'v_proj']),
+            bias=peft_config.get('bias', 'none'),
+            inference_mode=False,
+        )
+        
+        # Apply LoRA to model
+        base_model = get_peft_model(base_model, lora_config)
+        
+        # Enable training mode for PEFT
+        base_model.train()
+        
+        print(f"Applied LoRA with r={lora_config.r}, alpha={lora_config.lora_alpha}")
+        print(f"Target modules: {lora_config.target_modules}")
+        
+        # Print trainable parameters
+        trainable_params = sum(p.numel() for p in base_model.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in base_model.parameters())
+        print(f"Trainable parameters: {trainable_params:,} ({100 * trainable_params / total_params:.2f}%)")
     
     # Create config if not provided
     if config is None:
@@ -484,7 +547,7 @@ def create_policy_model(model_name_or_path: str,
         config_kwargs.update(kwargs)
         config = PolicyModelConfig(**config_kwargs)
     
-    # Create policy model
-    policy_model = PolicyModel(config)
+    # Create policy model with the prepared base model
+    policy_model = PolicyModel(config, base_model=base_model)
     
     return policy_model, tokenizer
