@@ -140,10 +140,16 @@ class BaseTrainer(ABC):
         # Move model to device
         self.model = self.model.to(self.device)
         
-        # Setup logging
+        # Setup logging - 保存到实验目录下
+        experiment_name = getattr(config, 'experiment_name', None)
+        if experiment_name:
+            log_file_path = os.path.join(config.output_dir, experiment_name, "logs", "training.log")
+        else:
+            log_file_path = os.path.join(config.output_dir, "training.log")
+        
         self.logger = setup_logger(
             name=self.__class__.__name__,
-            log_file=os.path.join(config.output_dir, "training.log")
+            log_file=log_file_path
         )
         
         # Setup TensorBoard logging
@@ -155,9 +161,16 @@ class BaseTrainer(ABC):
         # Setup metrics tracker
         self.metrics_tracker = MetricsTracker()
         
-        # Create output directory
+        # Create output directory and logging directory
         os.makedirs(config.output_dir, exist_ok=True)
         os.makedirs(config.logging_dir, exist_ok=True)
+        
+        # 如果有实验名称，确保创建相应的子目录
+        if experiment_name:
+            eval_results_dir = os.path.join(config.output_dir, "eval_results")
+            checkpoints_dir = os.path.join(config.output_dir, "checkpoints")
+            os.makedirs(eval_results_dir, exist_ok=True)
+            os.makedirs(checkpoints_dir, exist_ok=True)
         
         # Set random seed
         self._set_seed(config.seed)

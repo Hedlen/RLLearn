@@ -122,21 +122,96 @@ class ModelEvaluator:
     
     def _load_model(self, model_path: str) -> PolicyModel:
         """Load trained model"""
-        self.logger.info(f"Loading model from {model_path}")
+        # 构建实际的模型路径：output_dir/experiment_name
+        experiment_name = self.config.get('training', {}).get('experiment_name')
+        if experiment_name:
+            actual_model_path = os.path.join(model_path, experiment_name)
+        else:
+            actual_model_path = model_path
+        
+        # 检查路径是否存在
+        if not os.path.exists(actual_model_path):
+            raise ValueError(f"Model path does not exist: {actual_model_path}")
+        
+        # 查找最优模型
+        best_model_path = self._find_best_model(actual_model_path)
+        
+        self.logger.info(f"Loading model from {best_model_path}")
         
         try:
             # Try to load as PolicyModel first
-            model = PolicyModel.from_pretrained(model_path)
-        except:
+            model = PolicyModel.from_pretrained(best_model_path)
+        except Exception as e:
+            self.logger.warning(f"Failed to load as PolicyModel: {e}")
             # Fallback to standard transformers model
             model = AutoModelForCausalLM.from_pretrained(
-                model_path,
+                best_model_path,
                 torch_dtype=torch.float16 if self.config.get('hardware', {}).get('torch_dtype') == 'float16' else torch.float32,
                 device_map='auto'
             )
         
         model.eval()
         return model
+    
+    def _find_best_model(self, model_dir: str) -> str:
+        """Find the best model in the given directory
+        
+        Args:
+            model_dir: Directory containing model checkpoints
+            
+        Returns:
+            Path to the best model
+        """
+        # 检查是否有直接保存的模型文件
+        if os.path.exists(os.path.join(model_dir, 'config.json')) or \
+           os.path.exists(os.path.join(model_dir, 'pytorch_model.bin')) or \
+           os.path.exists(os.path.join(model_dir, 'model.safetensors')):
+            return model_dir
+        
+        # 查找checkpoints目录
+        checkpoints_dir = os.path.join(model_dir, 'checkpoints')
+        if os.path.exists(checkpoints_dir):
+            # 获取所有checkpoint目录
+            checkpoint_dirs = []
+            for item in os.listdir(checkpoints_dir):
+                checkpoint_path = os.path.join(checkpoints_dir, item)
+                if os.path.isdir(checkpoint_path):
+                    checkpoint_dirs.append((item, checkpoint_path))
+            
+            if not checkpoint_dirs:
+                raise ValueError(f"No checkpoints found in {checkpoints_dir}")
+            
+            # 优先选择final checkpoint
+            for name, path in checkpoint_dirs:
+                if 'final' in name.lower():
+                    self.logger.info(f"Found final checkpoint: {name}")
+                    return path
+            
+            # 如果没有final，选择最新的step checkpoint
+            step_checkpoints = []
+            for name, path in checkpoint_dirs:
+                if 'step-' in name:
+                    try:
+                        step_num = int(name.split('step-')[1])
+                        step_checkpoints.append((step_num, name, path))
+                    except (ValueError, IndexError):
+                        continue
+            
+            if step_checkpoints:
+                # 按step数排序，选择最大的
+                step_checkpoints.sort(key=lambda x: x[0], reverse=True)
+                best_step, best_name, best_path = step_checkpoints[0]
+                self.logger.info(f"Found best step checkpoint: {best_name} (step {best_step})")
+                return best_path
+            
+            # 如果没有step checkpoint，选择最新修改的目录
+            checkpoint_dirs.sort(key=lambda x: os.path.getmtime(x[1]), reverse=True)
+            best_name, best_path = checkpoint_dirs[0]
+            self.logger.info(f"Found latest checkpoint: {best_name}")
+            return best_path
+        
+        # 如果都没有找到，抛出错误
+        raise ValueError(f"No valid model found in {model_dir}. Please ensure the model has been trained and saved.")
     
     def _load_reward_model(self, model_path: str) -> RewardModel:
         """Load reward model"""
@@ -313,15 +388,51 @@ class ModelEvaluator:
     
     def _save_results(self, results: Dict[str, Any]):
         """Save evaluation results"""
-        output_dir = self.config['training']['output_dir']
-        results_path = os.path.join(output_dir, 'evaluation_results.json')
+        # 构建实际的输出路径：output_dir/experiment_name
+        base_output_dir = self.config['training']['output_dir']
+        experiment_name = self.config.get('training', {}).get('experiment_name')
         
-        os.makedirs(output_dir, exist_ok=True)
+        if experiment_name:
+            output_dir = os.path.join(base_output_dir, experiment_name)
+        else:
+            output_dir = base_output_dir
         
+        # 创建评估结果目录
+        eval_results_dir = os.path.join(output_dir, 'eval_results')
+        os.makedirs(eval_results_dir, exist_ok=True)
+        
+        # 生成带时间戳的结果文件名
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        results_filename = f'evaluation_results_{timestamp}.json'
+        results_path = os.path.join(eval_results_dir, results_filename)
+        
+        # 同时保存一个最新的结果文件（不带时间戳）
+        latest_results_path = os.path.join(eval_results_dir, 'evaluation_results_latest.json')
+        
+        # 保存详细结果
         with open(results_path, 'w', encoding='utf-8') as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
+        # 保存最新结果的副本
+        with open(latest_results_path, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
         self.logger.info(f"Evaluation results saved to {results_path}")
+        self.logger.info(f"Latest results saved to {latest_results_path}")
+        
+        # 保存简化的摘要文件
+        summary = self._create_evaluation_summary(results)
+        summary_path = os.path.join(eval_results_dir, f'evaluation_summary_{timestamp}.txt')
+        latest_summary_path = os.path.join(eval_results_dir, 'evaluation_summary_latest.txt')
+        
+        with open(summary_path, 'w', encoding='utf-8') as f:
+            f.write(summary)
+        
+        with open(latest_summary_path, 'w', encoding='utf-8') as f:
+            f.write(summary)
+        
+        self.logger.info(f"Evaluation summary saved to {summary_path}")
         
         # Print summary
         self.logger.info("=== Evaluation Summary ===")
@@ -335,3 +446,30 @@ class ModelEvaluator:
                         self.logger.info(f"  {metric}: {value}")
             else:
                 self.logger.info(f"  {metrics}")
+    
+    def _create_evaluation_summary(self, results: Dict[str, Any]) -> str:
+        """Create a human-readable evaluation summary"""
+        from datetime import datetime
+        
+        summary_lines = []
+        summary_lines.append(f"Evaluation Summary - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        summary_lines.append("=" * 60)
+        
+        experiment_name = self.config.get('training', {}).get('experiment_name', 'default')
+        summary_lines.append(f"Experiment: {experiment_name}")
+        summary_lines.append(f"Model Path: {self.config['training']['output_dir']}")
+        summary_lines.append("")
+        
+        for category, metrics in results.items():
+            summary_lines.append(f"{category.upper()}:")
+            if isinstance(metrics, dict):
+                for metric, value in metrics.items():
+                    if isinstance(value, float):
+                        summary_lines.append(f"  {metric}: {value:.4f}")
+                    else:
+                        summary_lines.append(f"  {metric}: {value}")
+            else:
+                summary_lines.append(f"  {metrics}")
+            summary_lines.append("")
+        
+        return "\n".join(summary_lines)

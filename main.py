@@ -133,11 +133,19 @@ def main():
     if args.experiment_name:
         config['training']['experiment_name'] = args.experiment_name
     
-    # Setup logging
+    # Setup logging - 保存到实验目录下
+    base_output_dir = config['training']['output_dir']
+    experiment_name = config.get('training', {}).get('experiment_name')
+    
+    if experiment_name:
+        log_dir = os.path.join(base_output_dir, experiment_name, "logs")
+    else:
+        log_dir = os.path.join(base_output_dir, "logs")
+    
     logger = setup_logger(
         name="rl_learning",
         level=config['logging']['log_level'],
-        log_dir=os.path.join(config['training']['output_dir'], "logs")
+        log_dir=log_dir
     )
     
     logger.info(f"Starting RL Learning Framework in {args.mode} mode")
