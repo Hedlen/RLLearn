@@ -441,3 +441,133 @@ hardware:
   torch_dtype: "float16"
   use_deepspeed: false
   deepspeed_config: null
+  
+  # Distributed Training Configuration
+  distributed:
+    # 是否启用分布式训练
+    enabled: false
+    
+    # 分布式后端
+    backend: "nccl"  # "nccl", "gloo", "mpi"
+    
+    # 分布式训练策略
+    strategy: "auto"  # "auto", "ddp", "deepspeed", "fsdp"
+    
+    # DDP (DistributedDataParallel) 配置
+    ddp:
+      # 是否启用DDP
+      enabled: false
+      
+      # DDP参数
+      find_unused_parameters: false
+      gradient_as_bucket_view: true
+      static_graph: false
+      
+      # 通信优化
+      bucket_cap_mb: 25
+      
+      # 同步批归一化
+      sync_batchnorm: false
+    
+    # FSDP (Fully Sharded Data Parallel) 配置
+    fsdp:
+      # 是否启用FSDP
+      enabled: false
+      
+      # FSDP参数
+      sharding_strategy: "FULL_SHARD"  # "FULL_SHARD", "SHARD_GRAD_OP", "NO_SHARD"
+      cpu_offload: false
+      mixed_precision: true
+      
+      # 自动包装策略
+      auto_wrap_policy: "transformer_auto_wrap_policy"
+      min_num_params: 1e8
+    
+    # 多节点配置
+    multi_node:
+      # 节点数量
+      num_nodes: 1
+      
+      # 当前节点排名
+      node_rank: 0
+      
+      # 主节点地址
+      master_addr: "localhost"
+      
+      # 主节点端口
+      master_port: "12355"
+      
+      # 每个节点的GPU数量
+      nproc_per_node: "auto"  # "auto" 或具体数字
+    
+    # 通信配置
+    communication:
+      # 通信超时时间（秒）
+      timeout: 1800
+      
+      # 是否启用通信压缩
+      compression: false
+      
+      # 梯度压缩算法
+      compression_algorithm: "none"  # "none", "fp16", "bf16"
+    
+    # 性能优化
+    optimization:
+      # 是否启用梯度检查点
+      gradient_checkpointing: false
+      
+      # 是否启用编译优化
+      compile: false
+      
+      # 编译模式
+      compile_mode: "default"  # "default", "reduce-overhead", "max-autotune"
+      
+      # 是否启用混合精度
+      mixed_precision: true
+      
+      # 混合精度类型
+      mixed_precision_dtype: "float16"  # "float16", "bfloat16"
+  
+  # DeepSpeed 配置（扩展）
+  deepspeed:
+    # 是否启用DeepSpeed
+    enabled: false
+    
+    # DeepSpeed配置文件路径
+    config_file: "./configs/deepspeed/ds_config.json"
+    
+    # ZeRO优化阶段
+    zero_stage: 2  # 0, 1, 2, 3
+    
+    # CPU卸载配置
+    cpu_offload:
+      enabled: false
+      pin_memory: true
+    
+    # NVMe卸载配置
+    nvme_offload:
+      enabled: false
+      nvme_path: "/tmp"
+    
+    # 梯度累积
+    gradient_accumulation_steps: 1
+    
+    # 梯度裁剪
+    gradient_clipping: 1.0
+    
+    # 激活检查点
+    activation_checkpointing:
+      enabled: false
+      partition_activations: false
+      cpu_checkpointing: false
+    
+    # 通信优化
+    communication_data_type: "fp16"  # "fp16", "fp32", "bf16"
+    
+    # 内存优化
+    memory_efficient_linear: false
+    
+    # 编译优化
+    compile:
+      enabled: false
+      backend: "inductor"  # "inductor", "aot_eager"

@@ -21,7 +21,26 @@ from ..utils import (
     MetricsTracker,
     save_checkpoint,
     load_checkpoint,
-    find_latest_checkpoint
+    find_latest_checkpoint,
+    setup_distributed,
+    cleanup_distributed,
+    is_distributed,
+    is_main_process,
+    get_rank,
+    get_world_size,
+    barrier,
+    reduce_dict,
+    save_on_master,
+    print_on_master,
+    DistributedSampler,
+    is_deepspeed_available,
+    create_deepspeed_config,
+    save_deepspeed_config,
+    auto_select_strategy,
+    get_model_size_gb,
+    get_gpu_memory_gb,
+    initialize_deepspeed,
+    is_deepspeed_zero3_enabled
 )
 from ..models import get_model_device, count_parameters
 
@@ -80,6 +99,24 @@ class TrainingConfig:
     # Device
     device: Optional[str] = None
     
+    # Distributed training
+    distributed: bool = False
+    distributed_strategy: str = 'ddp'  # 'ddp', 'deepspeed', 'auto'
+    distributed_backend: str = 'nccl'  # 'nccl', 'gloo', 'auto'
+    find_unused_parameters: bool = False
+    ddp_bucket_cap_mb: int = 25
+    ddp_broadcast_buffers: bool = True
+    
+    # DeepSpeed configuration
+    deepspeed_config: Optional[Union[str, Dict[str, Any]]] = None
+    deepspeed_zero_stage: int = 2  # 0, 1, 2, 3
+    deepspeed_offload_optimizer: bool = False
+    deepspeed_offload_param: bool = False
+    deepspeed_cpu_offload: bool = False
+    deepspeed_nvme_offload: bool = False
+    deepspeed_nvme_path: str = "/tmp"
+    deepspeed_pin_memory: bool = True
+    
     # Resume training
     resume_from_checkpoint: Optional[str] = None
     
@@ -131,14 +168,75 @@ class BaseTrainer(ABC):
         self.early_stopping_counter = 0
         self.is_training = False
         
-        # Setup device
-        if config.device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = torch.device(config.device)
+        # Setup distributed training and strategy selection
+        self.distributed_info = None
+        self.use_deepspeed = False
+        self.deepspeed_config = None
         
-        # Move model to device
-        self.model = self.model.to(self.device)
+        # 获取分布式配置
+        distributed_config = getattr(config, 'hardware', {}).get('distributed', {})
+        distributed_enabled = distributed_config.get('enabled', False) or config.distributed or 'RANK' in os.environ
+        
+        if distributed_enabled:
+            # 获取分布式后端配置
+            backend = distributed_config.get('backend', config.distributed_backend)
+            self.distributed_info = setup_distributed(backend)
+            self.device = self.distributed_info['device']
+            self.is_distributed = self.distributed_info['distributed']
+            self.rank = self.distributed_info['rank']
+            self.world_size = self.distributed_info['world_size']
+            
+            # 获取分布式策略
+            strategy = distributed_config.get('strategy', config.distributed_strategy)
+            
+            # Auto-select strategy if needed
+            if strategy == 'auto':
+                model_size_gb = get_model_size_gb(self.model)
+                gpu_memory_gb = get_gpu_memory_gb()
+                recommended_strategy = auto_select_strategy(model_size_gb, gpu_memory_gb, self.world_size)
+                strategy = recommended_strategy
+                print_on_master(f"Auto-selected distributed strategy: {recommended_strategy}")
+                print_on_master(f"Model size: {model_size_gb:.2f} GB, GPU memory: {gpu_memory_gb:.2f} GB")
+            
+            # Setup DeepSpeed if selected
+            if strategy == 'deepspeed' and is_deepspeed_available():
+                self.use_deepspeed = True
+                self._setup_deepspeed()
+            elif strategy == 'deepspeed' and not is_deepspeed_available():
+                print_on_master("Warning: DeepSpeed not available, falling back to DDP")
+                strategy = 'ddp'
+            
+            # 保存策略到配置中
+            config.distributed_strategy = strategy
+        else:
+            self.is_distributed = False
+            self.rank = 0
+            self.world_size = 1
+            # Setup device
+            if config.device is None:
+                self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            else:
+                self.device = torch.device(config.device)
+        
+        # Move model to device (if not using DeepSpeed)
+        if not self.use_deepspeed:
+            self.model = self.model.to(self.device)
+        
+        # Wrap model with DistributedDataParallel if needed (and not using DeepSpeed)
+        if self.is_distributed and not self.use_deepspeed:
+            # 获取DDP配置
+            ddp_config = distributed_config.get('ddp', {})
+            
+            self.model = torch.nn.parallel.DistributedDataParallel(
+                self.model,
+                device_ids=[self.distributed_info['local_rank']] if torch.cuda.is_available() else None,
+                output_device=self.distributed_info['local_rank'] if torch.cuda.is_available() else None,
+                find_unused_parameters=ddp_config.get('find_unused_parameters', getattr(config, 'find_unused_parameters', False)),
+                bucket_cap_mb=ddp_config.get('bucket_cap_mb', getattr(config, 'ddp_bucket_cap_mb', 25)),
+                broadcast_buffers=ddp_config.get('broadcast_buffers', getattr(config, 'ddp_broadcast_buffers', True)),
+                gradient_as_bucket_view=ddp_config.get('gradient_as_bucket_view', True),
+                static_graph=ddp_config.get('static_graph', False)
+            )
         
         # Setup logging - 保存到实验目录下
         experiment_name = getattr(config, 'experiment_name', None)
@@ -196,10 +294,113 @@ class BaseTrainer(ABC):
         self.logger.info(f"Trainable parameters: {param_counts['trainable']:,}")
         self.logger.info(f"Device: {self.device}")
     
+    def _setup_deepspeed(self):
+        """Setup DeepSpeed configuration and initialization"""
+        config = self.config
+        
+        # Determine ZeRO stage based on strategy
+        if config.distributed_strategy == 'deepspeed_stage1':
+            zero_stage = 1
+        elif config.distributed_strategy == 'deepspeed_stage2':
+            zero_stage = 2
+        elif config.distributed_strategy == 'deepspeed_stage3':
+            zero_stage = 3
+        else:
+            zero_stage = config.deepspeed_zero_stage
+        
+        # Create DeepSpeed configuration
+        if config.deepspeed_config is None:
+            # Calculate batch sizes
+            train_batch_size = (
+                config.per_device_train_batch_size * 
+                self.world_size * 
+                config.gradient_accumulation_steps
+            )
+            
+            self.deepspeed_config = create_deepspeed_config(
+                zero_stage=zero_stage,
+                offload_optimizer=config.deepspeed_offload_optimizer,
+                offload_param=config.deepspeed_offload_param,
+                cpu_offload=config.deepspeed_cpu_offload,
+                nvme_offload=config.deepspeed_nvme_offload,
+                nvme_path=config.deepspeed_nvme_path,
+                pin_memory=config.deepspeed_pin_memory,
+                train_batch_size=train_batch_size,
+                train_micro_batch_size_per_gpu=config.per_device_train_batch_size,
+                gradient_accumulation_steps=config.gradient_accumulation_steps,
+                fp16_enabled=config.fp16,
+                bf16_enabled=config.bf16,
+                gradient_clipping=config.max_grad_norm
+            )
+        elif isinstance(config.deepspeed_config, str):
+            # Load from file
+            from .deepspeed_utils import load_deepspeed_config
+            self.deepspeed_config = load_deepspeed_config(config.deepspeed_config)
+        else:
+            # Use provided dictionary
+            self.deepspeed_config = config.deepspeed_config
+        
+        # Save DeepSpeed config for reference
+        if is_main_process():
+            config_path = os.path.join(config.output_dir, "deepspeed_config.json")
+            save_deepspeed_config(self.deepspeed_config, config_path)
+            print_on_master(f"DeepSpeed config saved to: {config_path}")
+        
+        print_on_master(f"Using DeepSpeed with ZeRO stage {zero_stage}")
+        if zero_stage >= 2 and config.deepspeed_offload_optimizer:
+            print_on_master("Optimizer offloading enabled")
+        if zero_stage == 3 and config.deepspeed_offload_param:
+            print_on_master("Parameter offloading enabled")
+    
+    def _initialize_deepspeed_engine(self):
+        """Initialize DeepSpeed engine"""
+        if not self.use_deepspeed:
+            return
+        
+        try:
+            import deepspeed
+            
+            # Calculate training steps for scheduler
+            if self.train_dataloader is not None:
+                num_training_steps = (
+                    len(self.train_dataloader) * self.config.num_epochs
+                ) // self.config.gradient_accumulation_steps
+            else:
+                num_training_steps = 1000
+            
+            # Calculate warmup steps
+            if self.config.warmup_steps > 0:
+                num_warmup_steps = self.config.warmup_steps
+            else:
+                num_warmup_steps = int(num_training_steps * self.config.warmup_ratio)
+            
+            # Initialize DeepSpeed engine
+            self.model, self.optimizer, _, self.scheduler = deepspeed.initialize(
+                model=self.model,
+                config=self.deepspeed_config,
+                model_parameters=self.model.parameters()
+            )
+            
+            # Update device to DeepSpeed's device
+            self.device = self.model.device
+            
+            self.logger.info("DeepSpeed engine initialized successfully")
+            self.logger.info(f"  - Model device: {self.device}")
+            self.logger.info(f"  - Training steps: {num_training_steps}")
+            self.logger.info(f"  - Warmup steps: {num_warmup_steps}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize DeepSpeed engine: {e}")
+            raise
+    
     def setup_optimizer(self) -> torch.optim.Optimizer:
         """Setup optimizer"""
         if self.optimizer is not None:
             return self.optimizer
+        
+        # For DeepSpeed, optimizer will be created during engine initialization
+        if self.use_deepspeed:
+            return None
         
         # Get trainable parameters
         trainable_params = [p for p in self.model.parameters() if p.requires_grad]
@@ -220,6 +421,10 @@ class BaseTrainer(ABC):
         """Setup learning rate scheduler"""
         if self.scheduler is not None:
             return self.scheduler
+        
+        # For DeepSpeed, scheduler will be created during engine initialization
+        if self.use_deepspeed:
+            return None
         
         if self.optimizer is None:
             self.setup_optimizer()
@@ -288,19 +493,27 @@ class BaseTrainer(ABC):
         # Compute loss
         loss, metrics = self.compute_loss(batch)
         
-        # Scale loss for gradient accumulation
-        loss = loss / self.config.gradient_accumulation_steps
-        
-        # Backward pass
-        if self.config.fp16:
-            with torch.cuda.amp.autocast():
-                loss.backward()
+        if self.use_deepspeed:
+            # DeepSpeed handles scaling and backward pass
+            self.model.backward(loss)
+            
+            # Update metrics
+            metrics['loss'] = loss.item()
+            metrics['learning_rate'] = self.model.get_lr()[0] if hasattr(self.model, 'get_lr') else self.config.learning_rate
         else:
-            loss.backward()
-        
-        # Update metrics
-        metrics['loss'] = loss.item() * self.config.gradient_accumulation_steps
-        metrics['learning_rate'] = self.optimizer.param_groups[0]['lr']
+            # Scale loss for gradient accumulation
+            loss = loss / self.config.gradient_accumulation_steps
+            
+            # Backward pass
+            if self.config.fp16:
+                with torch.cuda.amp.autocast():
+                    loss.backward()
+            else:
+                loss.backward()
+            
+            # Update metrics
+            metrics['loss'] = loss.item() * self.config.gradient_accumulation_steps
+            metrics['learning_rate'] = self.optimizer.param_groups[0]['lr']
         
         return metrics
     
@@ -316,6 +529,10 @@ class BaseTrainer(ABC):
         # Setup optimizer and scheduler
         self.setup_optimizer()
         self.setup_scheduler()
+        
+        # Initialize DeepSpeed engine if using DeepSpeed
+        if self.use_deepspeed:
+            self._initialize_deepspeed_engine()
         
         # Resume from checkpoint if specified
         if self.config.resume_from_checkpoint:
@@ -368,44 +585,61 @@ class BaseTrainer(ABC):
         
         self.model.train()
         
+        # Set epoch for distributed sampler
+        if self.is_distributed and hasattr(self.train_dataloader.sampler, 'set_epoch'):
+            self.train_dataloader.sampler.set_epoch(self.epoch)
+        
         for step, batch in enumerate(self.train_dataloader):
             # Training step
             step_metrics = self.training_step(batch)
+            
+            # Synchronize metrics across processes in distributed training
+            if self.is_distributed:
+                step_metrics_tensor = {k: torch.tensor(v, device=self.device) 
+                                     for k, v in step_metrics.items() if isinstance(v, (int, float))}
+                step_metrics_tensor = reduce_dict(step_metrics_tensor)
+                step_metrics.update({k: v.item() for k, v in step_metrics_tensor.items()})
             
             # Update metrics tracker
             self.metrics_tracker.update(step_metrics)
             
             # Gradient accumulation
             if (step + 1) % self.config.gradient_accumulation_steps == 0:
-                # Clip gradients
-                if self.config.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(), 
-                        self.config.max_grad_norm
-                    )
-                
-                # Optimizer step
-                self.optimizer.step()
-                if self.scheduler is not None:
-                    self.scheduler.step()
-                self.optimizer.zero_grad()
+                if self.use_deepspeed:
+                    # DeepSpeed handles gradient clipping, optimizer step, and scheduler step
+                    self.model.step()
+                else:
+                    # Clip gradients
+                    if self.config.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(), 
+                            self.config.max_grad_norm
+                        )
+                    
+                    # Optimizer step
+                    self.optimizer.step()
+                    if self.scheduler is not None:
+                        self.scheduler.step()
+                    self.optimizer.zero_grad()
                 
                 self.global_step += 1
                 
-                # Logging
-                if self.global_step % self.config.logging_steps == 0:
+                # Logging (only on main process)
+                if self.global_step % self.config.logging_steps == 0 and is_main_process():
                     self._log_metrics(step_metrics)
                 
                 # Evaluation
                 if (self.config.evaluation_strategy == "steps" and 
                     self.global_step % self.config.eval_steps == 0):
                     eval_metrics = self.evaluate()
-                    self._log_metrics(eval_metrics, prefix="eval")
+                    if is_main_process():
+                        self._log_metrics(eval_metrics, prefix="eval")
                     epoch_metrics.update({f"eval_{k}": v for k, v in eval_metrics.items()})
                 
-                # Saving
+                # Saving (only on main process)
                 if (self.config.save_strategy == "steps" and 
-                    self.global_step % self.config.save_steps == 0):
+                    self.global_step % self.config.save_steps == 0 and 
+                    is_main_process()):
                     self._save_checkpoint(f"step-{self.global_step}")
         
         # End of epoch evaluation
@@ -461,49 +695,72 @@ class BaseTrainer(ABC):
         """
         checkpoint_dir = os.path.join(self.config.output_dir, "checkpoints")
         
-        # Get current metrics
-        current_metrics = self.metrics_tracker.get_average_metrics()
-        
-        save_checkpoint(
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.scheduler,
-            epoch=self.epoch,
-            step=self.global_step,
-            loss=current_metrics.get('loss', 0.0),
-            metrics=current_metrics,
-            checkpoint_dir=checkpoint_dir,
-            filename=checkpoint_name
-        )
-        
-        self.logger.info(f"Checkpoint saved: {checkpoint_name}")
+        if self.use_deepspeed:
+            # DeepSpeed handles checkpoint saving
+            checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
+            self.model.save_checkpoint(checkpoint_path)
+            self.logger.info(f"DeepSpeed checkpoint saved: {checkpoint_name}")
+        else:
+            # Get current metrics
+            current_metrics = self.metrics_tracker.get_average_metrics()
+            
+            # Get the actual model (unwrap DDP if needed)
+            model_to_save = self.model
+            if self.is_distributed and hasattr(self.model, 'module'):
+                model_to_save = self.model.module
+            
+            save_checkpoint(
+                model=model_to_save,
+                optimizer=self.optimizer,
+                scheduler=self.scheduler,
+                epoch=self.epoch,
+                step=self.global_step,
+                loss=current_metrics.get('loss', 0.0),
+                metrics=current_metrics,
+                checkpoint_dir=checkpoint_dir,
+                filename=checkpoint_name
+            )
+            
+            self.logger.info(f"Checkpoint saved: {checkpoint_name}")
     
     def _resume_from_checkpoint(self):
         """Resume training from checkpoint"""
-        if os.path.isdir(self.config.resume_from_checkpoint):
-            # Find latest checkpoint in directory
-            checkpoint_path = find_latest_checkpoint(self.config.resume_from_checkpoint)
-        else:
-            # Direct path to checkpoint file
+        if self.use_deepspeed:
+            # DeepSpeed handles checkpoint loading
             checkpoint_path = self.config.resume_from_checkpoint
-        
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            checkpoint_info = load_checkpoint(
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.scheduler,
-                checkpoint_path=checkpoint_path
-            )
-            
-            self.epoch = checkpoint_info['epoch']
-            self.global_step = checkpoint_info['step']
-            
-            self.logger.info(
-                f"Resumed from checkpoint: {checkpoint_path} "
-                f"(epoch {self.epoch}, step {self.global_step})"
-            )
+            if os.path.exists(checkpoint_path):
+                _, client_state = self.model.load_checkpoint(checkpoint_path)
+                if client_state:
+                    self.epoch = client_state.get('epoch', 0)
+                    self.global_step = client_state.get('step', 0)
+                self.logger.info(f"DeepSpeed checkpoint loaded: {checkpoint_path}")
+            else:
+                self.logger.warning(f"DeepSpeed checkpoint not found: {checkpoint_path}")
         else:
-            self.logger.warning(f"Checkpoint not found: {self.config.resume_from_checkpoint}")
+            if os.path.isdir(self.config.resume_from_checkpoint):
+                # Find latest checkpoint in directory
+                checkpoint_path = find_latest_checkpoint(self.config.resume_from_checkpoint)
+            else:
+                # Direct path to checkpoint file
+                checkpoint_path = self.config.resume_from_checkpoint
+            
+            if checkpoint_path and os.path.exists(checkpoint_path):
+                checkpoint_info = load_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    scheduler=self.scheduler,
+                    checkpoint_path=checkpoint_path
+                )
+                
+                self.epoch = checkpoint_info['epoch']
+                self.global_step = checkpoint_info['step']
+                
+                self.logger.info(
+                    f"Resumed from checkpoint: {checkpoint_path} "
+                    f"(epoch {self.epoch}, step {self.global_step})"
+                )
+            else:
+                self.logger.warning(f"Checkpoint not found: {self.config.resume_from_checkpoint}")
     
     def _should_stop_early(self) -> bool:
         """Check if training should stop early
@@ -539,11 +796,16 @@ class BaseTrainer(ABC):
         """
         os.makedirs(save_directory, exist_ok=True)
         
+        # Get the actual model (unwrap DDP if needed)
+        model_to_save = self.model
+        if self.is_distributed and hasattr(self.model, 'module'):
+            model_to_save = self.model.module
+        
         # Save model
-        if hasattr(self.model, 'save_pretrained'):
-            self.model.save_pretrained(save_directory)
+        if hasattr(model_to_save, 'save_pretrained'):
+            model_to_save.save_pretrained(save_directory)
         else:
-            torch.save(self.model.state_dict(), 
+            torch.save(model_to_save.state_dict(), 
                       os.path.join(save_directory, "pytorch_model.bin"))
         
         # Save tokenizer

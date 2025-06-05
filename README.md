@@ -9,6 +9,10 @@
 - **完整训练流程**: 从数据处理到模型训练的端到端解决方案
 - **多种模型**: 策略模型、价值模型、奖励模型
 - **丰富的数据处理**: 支持SFT、偏好学习、对话等多种数据格式
+- **分布式训练支持**: 支持单节点多GPU和多节点分布式训练
+  - **DDP (DistributedDataParallel)**: PyTorch原生分布式训练
+  - **DeepSpeed**: 支持ZeRO优化器，内存高效训练大模型
+  - **自动策略选择**: 根据模型大小自动选择最佳分布式策略
 - **实时监控**: TensorBoard集成，实时训练监控
 - **检查点管理**: 自动保存和恢复训练状态
 
@@ -17,22 +21,48 @@
 ```
 rl_learning/
 ├── config.yaml              # 主配置文件
+├── config_deepspeed_example.yaml # DeepSpeed配置示例
+├── config_distributed_example.yaml # 分布式训练配置示例
+├── config_examples.yaml     # 配置示例文件
+├── config_rlhf_example.yaml # RLHF配置示例
 ├── main.py                   # 生产级训练框架主入口
 ├── example_training.py       # 完整训练示例脚本
 ├── prepare_datasets.py       # 数据集准备脚本
+├── merge_datasets.py         # 数据集合并脚本
+├── merge_peft_model.py       # PEFT模型合并脚本
 ├── quick_test.py            # 快速测试脚本
+├── test_models.py           # 模型测试脚本
+├── test_training.py         # 训练测试脚本
 ├── requirements.txt          # 依赖包列表
-├── README.md                # 项目文档（包含完整的数据准备指南）
+├── README.md                # 项目文档
+├── TRAINING_MODES.md        # 训练模式说明
 ├── LICENSE                  # 开源协议
 ├── .gitignore              # Git忽略文件
-├── data/                   # 数据目录
+├── configs/               # 配置文件目录
+│   └── deepspeed/         # DeepSpeed配置
+├── scripts/               # 脚本文件
+│   ├── run_distributed.py # 分布式训练启动
+│   ├── check_environment.py # 环境检查
+│   ├── validate_config.py # 配置验证
+│   ├── training_monitor.py # 训练监控
+│   ├── pre_training_check.py # 训练前检查
+│   ├── peft_model_manager.py # PEFT模型管理
+│   └── training_utils.py   # 训练工具
+├── data/                  # 数据目录
 │   ├── processed/          # 处理后的数据
-│   ├── raw/               # 原始数据
-│   ├── sft_train.json     # SFT训练数据
-│   ├── preference_train.json # 偏好训练数据
-│   ├── eval.json          # 评估数据
-│   └── test.json          # 测试数据
-└── src/
+│   └── raw/               # 原始数据
+├── test_data/             # 测试数据目录
+│   ├── processed/          # 处理后的测试数据
+│   └── raw/               # 原始测试数据
+├── docs/                  # 文档目录
+│   ├── DISTRIBUTED_TRAINING_GUIDE.md # 分布式训练指南
+│   ├── DEEPSPEED_INTEGRATION.md # DeepSpeed集成
+│   ├── PEFT_USAGE_GUIDE.md # PEFT使用指南
+│   ├── LORA_QLORA_GUIDE.md # LoRA/QLoRA指南
+│   ├── CUSTOM_REWARD_FUNCTIONS.md # 自定义奖励函数
+│   ├── multi_datasets_guide.md # 多数据集指南
+│   └── validation_datasets_guide.md # 验证数据集指南
+└── src/                    # 核心源代码
     ├── algorithms/          # 强化学习算法
     │   ├── __init__.py
     │   ├── base.py         # 基础算法类
@@ -45,6 +75,7 @@ rl_learning/
     │   ├── processor.py    # 数据处理器
     │   ├── dataset.py      # 数据集类
     │   ├── collator.py     # 数据整理器
+    │   ├── merger.py       # 数据合并器
     │   └── utils.py        # 数据工具函数
     ├── evaluators/         # 评估模块
     │   ├── __init__.py
@@ -58,6 +89,8 @@ rl_learning/
     │   ├── value_model.py  # 价值模型
     │   ├── reward_model.py # 奖励模型
     │   └── model_utils.py  # 模型工具函数
+    ├── rewards/            # 奖励函数模块
+    │   └── custom_rewards.py # 自定义奖励函数
     ├── trainers/           # 训练器
     │   ├── __init__.py
     │   ├── base_trainer.py # 基础训练器
@@ -72,7 +105,9 @@ rl_learning/
         ├── logger.py       # 日志记录
         ├── config.py       # 配置管理
         ├── metrics.py      # 评估指标
-        └── checkpoint.py   # 检查点管理
+        ├── checkpoint.py   # 检查点管理
+        ├── distributed.py  # 分布式工具
+        └── deepspeed_utils.py # DeepSpeed工具
 ```
 
 ## 🛠️ 安装
@@ -225,8 +260,7 @@ generation:
 logging:
   level: "INFO"                             # 日志级别
   log_dir: "./logs"                         # 日志目录
-  tensorboard: true                         # 启用TensorBoard
-```
+  tensorboard: true                         # 启用TensorBoard```
 
 ## 🚀 快速开始
 
@@ -1046,6 +1080,59 @@ python scripts/pre_training_check.py Qwen/Qwen2.5-3B-Instruct
 > - PPO和GRPO训练依赖奖励模型，必须先完成奖励模型训练！
 > - DPO可以独立工作，不需要奖励模型
 > - 推荐使用 `example_training.py` 进行完整流程训练
+
+### 🌐 分布式训练支持
+
+框架全面支持分布式训练，可显著加速大模型训练：
+
+#### 支持的分布式策略
+
+- **DDP (DistributedDataParallel)**: 适用于中小型模型（<1B参数）
+- **DeepSpeed ZeRO**: 适用于大型模型，支持内存优化
+  - ZeRO Stage 1: 优化器状态分片
+  - ZeRO Stage 2: 梯度分片
+  - ZeRO Stage 3: 参数分片，支持CPU/NVMe卸载
+- **自动策略选择**: 根据模型大小自动选择最佳策略
+
+#### 快速开始分布式训练
+
+```bash
+# 单节点4GPU训练（自动选择策略）
+python scripts/run_distributed.py \
+    --nproc_per_node 4 \
+    --config config.yaml \
+    --algorithm sft
+
+# 使用DeepSpeed训练大模型
+python scripts/run_distributed.py \
+    --nproc_per_node 4 \
+    --config config_deepspeed_example.yaml \
+    --algorithm sft
+
+# 多节点训练（节点1）
+python scripts/run_distributed.py \
+    --nproc_per_node 4 --nnodes 2 --node_rank 0 \
+    --master_addr 192.168.1.100 --master_port 29500 \
+    --config config.yaml
+```
+
+#### 配置示例
+
+```yaml
+# 启用分布式训练
+distributed: true
+distributed_strategy: "auto"  # 自动选择：ddp, deepspeed, auto
+distributed_backend: "nccl"   # GPU使用nccl，CPU使用gloo
+
+# DeepSpeed配置（可选）
+deepspeed_config: "configs/deepspeed/zero2.json"
+deepspeed_zero_stage: 2
+deepspeed_cpu_offload: true
+```
+
+> 📖 **详细指南**: 完整的分布式训练配置和优化指南请参考 [`docs/DISTRIBUTED_TRAINING_GUIDE.md`](docs/DISTRIBUTED_TRAINING_GUIDE.md)
+>
+> 🚀 **DeepSpeed集成**: DeepSpeed功能详细说明请参考 [`DEEPSPEED_INTEGRATION.md`](DEEPSPEED_INTEGRATION.md)
 
 ### 使用示例脚本训练（推荐）
 

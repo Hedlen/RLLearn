@@ -255,5 +255,108 @@ class ConfigurableReward:
         return min(1.0, total_score)
 
 
+def correctness_reward(prompt: str, response: str, expected_answer: str = None) -> float:
+    """Correctness-based reward function
+    
+    Rewards responses based on whether the generated answer is correct.
+    Uses two approaches: exact string matching and numerical equivalence checking.
+    Exact matches receive higher rewards (2.0), while numerical equivalence 
+    receives smaller rewards (1.5).
+    
+    Args:
+        prompt: The input prompt
+        response: The generated response
+        expected_answer: The expected correct answer (if available)
+        
+    Returns:
+        Reward score: 2.0 for exact match, 1.5 for numerical equivalence, 0.0 otherwise
+    """
+    if not expected_answer:
+        # If no expected answer is provided, try to extract from prompt
+        # This is a fallback mechanism - in practice, expected_answer should be provided
+        return 0.5  # Neutral reward when no ground truth is available
+    
+    # Clean and normalize both answers
+    response_clean = response.strip().lower()
+    expected_clean = expected_answer.strip().lower()
+    
+    # 1. Exact string matching (highest reward)
+    if response_clean == expected_clean:
+        return 2.0
+    
+    # 2. Numerical equivalence checking
+    try:
+        # Extract numbers from both response and expected answer
+        import re
+        
+        # Find all numbers (including decimals) in the response and expected answer
+        response_numbers = re.findall(r'-?\d+\.?\d*', response_clean)
+        expected_numbers = re.findall(r'-?\d+\.?\d*', expected_clean)
+        
+        if response_numbers and expected_numbers:
+            # Convert to float for comparison
+            response_vals = [float(num) for num in response_numbers]
+            expected_vals = [float(num) for num in expected_numbers]
+            
+            # Check if the main numerical values are equivalent
+            # (considering floating point precision)
+            if len(response_vals) == len(expected_vals):
+                tolerance = 1e-6
+                all_match = all(
+                    abs(r_val - e_val) < tolerance 
+                    for r_val, e_val in zip(response_vals, expected_vals)
+                )
+                if all_match:
+                    return 1.5
+            
+            # Check if at least the first/main number matches
+            if len(response_vals) > 0 and len(expected_vals) > 0:
+                tolerance = 1e-6
+                if abs(response_vals[0] - expected_vals[0]) < tolerance:
+                    return 1.5
+    
+    except (ValueError, IndexError):
+        # If numerical parsing fails, continue to other checks
+        pass
+    
+    # 3. Partial matching for common answer formats
+    # Remove common prefixes/suffixes that might differ
+    response_core = re.sub(r'^(the answer is|answer:|result:|solution:)\s*', '', response_clean)
+    expected_core = re.sub(r'^(the answer is|answer:|result:|solution:)\s*', '', expected_clean)
+    
+    response_core = re.sub(r'\s*(\.|,|;|!)\s*$', '', response_core)
+    expected_core = re.sub(r'\s*(\.|,|;|!)\s*$', '', expected_core)
+    
+    if response_core == expected_core:
+        return 1.8  # High reward for core content match
+    
+    # 4. Check if the expected answer is contained in the response
+    if expected_core in response_core or response_core in expected_core:
+        return 1.0  # Moderate reward for partial match
+    
+    # 5. Check for semantic similarity in mathematical expressions
+    # Handle common mathematical notation differences
+    math_patterns = [
+        (r'\s*\*\s*', '*'),  # Normalize multiplication
+        (r'\s*/\s*', '/'),   # Normalize division
+        (r'\s*\+\s*', '+'), # Normalize addition
+        (r'\s*-\s*', '-'),  # Normalize subtraction
+        (r'\s*=\s*', '='),  # Normalize equals
+    ]
+    
+    response_math = response_core
+    expected_math = expected_core
+    
+    for pattern, replacement in math_patterns:
+        response_math = re.sub(pattern, replacement, response_math)
+        expected_math = re.sub(pattern, replacement, expected_math)
+    
+    if response_math == expected_math:
+        return 1.5  # Reward for mathematical equivalence
+    
+    # No match found
+    return 0.0
+
+
 # Create a default configurable reward instance
 default_configurable_reward = ConfigurableReward()

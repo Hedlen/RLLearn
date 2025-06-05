@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from src.utils import load_config, setup_logger
+from src.utils.deepspeed_utils import is_deepspeed_available, auto_select_strategy
 from src.data import DataProcessor
 from src.data.merger import merge_datasets_for_algorithm, merge_validation_datasets_for_algorithm
 from src.evaluators import ModelEvaluator
@@ -52,12 +53,26 @@ def _get_algorithm_data_paths(config, algorithm_type):
 def _create_dataloaders(train_dataset, eval_file, processor, data_collator, training_config, dataset_type):
     """Create optimized train and eval dataloaders"""
     from torch.utils.data import DataLoader
+    from src.utils import DistributedSampler, is_distributed
+    
+    # Create train sampler (distributed or regular)
+    if is_distributed() or getattr(training_config, 'distributed', False):
+        train_sampler = DistributedSampler(
+            train_dataset, 
+            shuffle=True, 
+            drop_last=training_config.dataloader_drop_last
+        )
+        shuffle = False  # 使用sampler时不能同时设置shuffle=True
+    else:
+        train_sampler = None
+        shuffle = True
     
     # Create train dataloader
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=training_config.per_device_train_batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=train_sampler,
         collate_fn=data_collator,
         num_workers=training_config.dataloader_num_workers,
         pin_memory=training_config.dataloader_pin_memory,
@@ -150,6 +165,50 @@ def main():
     
     logger.info(f"Starting RL Learning Framework in {args.mode} mode")
     logger.info(f"Configuration loaded from {args.config}")
+    
+    # Auto-select distributed strategy if needed
+    training_config = config.get('training', {})
+    hardware_config = config.get('hardware', {})
+    distributed_config = hardware_config.get('distributed', {})
+    
+    # 检查是否需要自动选择策略
+    strategy = distributed_config.get('strategy') or training_config.get('distributed_strategy')
+    if strategy == 'auto':
+        logger.info("Auto-selecting distributed training strategy...")
+        # 需要先创建模型来获取模型大小
+        from src.models.model_factory import create_policy_model
+        model_config = config['model']
+        temp_model, _ = create_policy_model(
+            model_name_or_path=model_config['model_name_or_path'],
+            use_peft=False,  # 临时创建，不使用PEFT
+            quantization_config=None
+        )
+        
+        from src.utils.deepspeed_utils import get_model_size_gb, get_gpu_memory_gb
+        model_size_gb = get_model_size_gb(temp_model)
+        gpu_memory_gb = get_gpu_memory_gb()
+        world_size = int(os.environ.get('WORLD_SIZE', 1))
+        
+        recommended_strategy = auto_select_strategy(model_size_gb, gpu_memory_gb, world_size)
+        
+        # 更新配置
+        if 'distributed' not in hardware_config:
+            hardware_config['distributed'] = {}
+        hardware_config['distributed']['strategy'] = recommended_strategy
+        training_config['distributed_strategy'] = recommended_strategy
+        
+        logger.info(f"Selected strategy: {recommended_strategy}")
+        logger.info(f"Model size: {model_size_gb:.2f} GB, GPU memory: {gpu_memory_gb:.2f} GB")
+        
+        # 清理临时模型
+        del temp_model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    # Log DeepSpeed availability
+    if is_deepspeed_available():
+        logger.info("DeepSpeed is available")
+    else:
+        logger.info("DeepSpeed is not available, using DDP for distributed training")
     
     try:
         if args.mode == "data_process":
